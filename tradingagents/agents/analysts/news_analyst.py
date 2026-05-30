@@ -6,11 +6,37 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
 )
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.market_router import is_vn_ticker
+
+_VN_NEWS_CONTEXT = """
+
+VIETNAMESE NEWS CONTEXT — apply when interpreting news for this stock:
+
+PRIMARY SOURCES (most reliable for VN company-specific news):
+1. Official HNX/HOSE disclosure portals — board resolutions, material events (most authoritative)
+2. CafeF (cafef.vn) — most widely read Vietnamese financial news
+3. Vietstock (vietstock.vn) — analysis-heavy, good for earnings previews
+4. VnEconomy (vneconomy.vn) — macro and SBV policy focus
+
+KEY MACRO CATALYSTS FOR VN MARKET:
+- SBV policy rate changes and credit growth quota announcements
+- VND/USD exchange rate management (SBV managed float)
+- VN30/VN100 index semi-annual rebalancing — inclusion/exclusion moves stocks sharply
+- SOE divestment (thoai von nha nuoc) calendar — creates supply overhang
+- FDI inflow data from Ministry of Planning and Investment
+- China macro: significant impact via supply chains and tourism
+
+LANGUAGE NOTE: Most company-specific disclosures are in Vietnamese.
+If news_block is sparse, note this gap and rely more on technical and fundamental analysis.
+Flag these VN-specific risk keywords if present: "ket room ngoai" (foreign room full),
+"giai chap" (margin call), "thoai von nha nuoc" (government divestment), "kiem toan" (audit concern).
+"""
 
 
 def create_news_analyst(llm):
     def news_analyst_node(state):
         current_date = state["trade_date"]
+        ticker = state["company_of_interest"]
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
@@ -20,9 +46,12 @@ def create_news_analyst(llm):
             get_global_news,
         ]
 
+        vn_context = _VN_NEWS_CONTEXT if is_vn_ticker(ticker) else ""
+
         system_message = (
             f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, and get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            + vn_context
             + get_language_instruction()
         )
 

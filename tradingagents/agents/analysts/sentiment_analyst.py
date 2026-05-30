@@ -41,6 +41,7 @@ from tradingagents.agents.utils.structured import (
 )
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.dataflows.market_router import is_vn_ticker
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -62,11 +63,14 @@ def create_sentiment_analyst(llm):
         end_date = state["trade_date"]
         start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
+        _is_vn = is_vn_ticker(ticker)
 
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
+        # StockTwits and Reddit return empty/placeholder for VN tickers —
+        # that is expected; the VN prompt guidance handles interpretation.
         stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
         reddit_block = fetch_reddit_posts(ticker)
 
@@ -77,6 +81,7 @@ def create_sentiment_analyst(llm):
             news_block=news_block,
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
+            is_vn=_is_vn,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -118,6 +123,35 @@ def create_sentiment_analyst(llm):
     return sentiment_analyst_node
 
 
+_VN_SENTIMENT_GUIDANCE = """
+## IMPORTANT — Vietnamese Stock Sentiment Context
+
+StockTwits and Reddit do NOT cover Vietnamese stocks (VN tickers like VCB, FPT, HPG
+are only listed on HOSE/HNX, not US exchanges). Expect empty or near-empty results
+from those sources — this is NORMAL, not a data error.
+
+Vietnamese retail investors primarily discuss stocks on:
+- CafeF forums (cafef.vn) — most active VN stock forum
+- F319 (f319.com) — large retail trader community
+- Facebook groups and Zalo (private, not crawlable)
+
+Since social media data is unavailable, use PRICE-ACTION as your sentiment proxy:
+
+BULLISH SIGNALS: consecutive ceiling hits (gia tran, +7% days), volume surge >2× average,
+  foreign room (ty le sohuu nuoc ngoai) decreasing (foreigners buying)
+BEARISH SIGNALS: consecutive floor hits (gia san, -7% days), volume spike with price down
+  (margin call / giai chap), foreign room increasing (foreigners selling)
+NEUTRAL: price ranging within band, average volume, no limit hits
+
+RISK FLAGS to watch in news_block: "ket room ngoai" (foreign room full/exhausted),
+  "giai chap" (forced margin selling), "thoai von nha nuoc" (government divestment overhang),
+  "kiem toan co y kien" (qualified audit opinion)
+
+Weight news_block heavily. Discount the empty StockTwits/Reddit sections — they carry
+no information for Vietnamese equities.
+"""
+
+
 def _build_system_message(
     *,
     ticker: str,
@@ -126,9 +160,12 @@ def _build_system_message(
     news_block: str,
     stocktwits_block: str,
     reddit_block: str,
+    is_vn: bool = False,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
+    vn_guidance = _VN_SENTIMENT_GUIDANCE if is_vn else ""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
+{vn_guidance}
 
 ## Data sources (pre-fetched, in this prompt)
 

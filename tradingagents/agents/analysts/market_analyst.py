@@ -7,12 +7,41 @@ from tradingagents.agents.utils.agent_utils import (
     get_verified_market_snapshot,
 )
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.market_router import is_vn_ticker
+
+_VN_MARKET_CONTEXT = """
+
+VIETNAMESE MARKET RULES — apply these when analyzing this stock:
+
+PRICE BANDS (hard limits — price cannot move outside these daily):
+- HOSE stocks: ±7% from reference price | HNX: ±10% | UPCoM: ±15%
+- Consecutive ceiling hits (gia tran) = strong demand that cannot clear → bullish accumulation signal
+- Consecutive floor hits (gia san) = forced selling / margin call cascade → bearish panic signal
+
+RSI CALIBRATION FOR VN MARKET:
+- Do NOT apply standard 70/30 thresholds mechanically — price bands suppress RSI extremes
+- RSI >65 with 3+ consecutive ceiling hits = strong bullish accumulation
+- RSI <35 with 3+ consecutive floor hits = margin call / forced selling cascade
+- Adjust interpretation accordingly
+
+VOLUME PROFILE:
+- Two sessions: morning (09:00–11:30) and afternoon (13:00–15:00) ICT
+- ATC auction at 14:30–15:00 concentrates volume — daily VWMA is valid but intraday is distorted
+- Volume >2× 20-day average with price up = institutional accumulation
+
+SETTLEMENT: T+2 — shares bought today cannot be sold for 2 trading days.
+Factor this into stop-loss and exit strategy recommendations.
+
+MOVING AVERAGES: Golden/death cross applies, but lower reliability for stocks outside VN30.
+For VN30 large-caps (VCB, BID, FPT, HPG, VNM), MA signals are more reliable.
+"""
 
 
 def create_market_analyst(llm):
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
+        ticker = state["company_of_interest"]
         instrument_context = get_instrument_context_from_state(state)
 
         tools = [
@@ -20,6 +49,8 @@ def create_market_analyst(llm):
             get_indicators,
             get_verified_market_snapshot,
         ]
+
+        vn_context = _VN_MARKET_CONTEXT if is_vn_ticker(ticker) else ""
 
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
@@ -52,6 +83,7 @@ Before writing the final report, call get_verified_market_snapshot for this tick
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            + vn_context
             + get_language_instruction()
         )
 

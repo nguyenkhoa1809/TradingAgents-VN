@@ -221,3 +221,10 @@ __marimo__/
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise
 reports/
+
+# Local venv in project root (pip install -e . creates scripts/ etc. here)
+pyvenv.cfg
+Include/
+scripts/
+test_routing.py
+test_prompts.py
