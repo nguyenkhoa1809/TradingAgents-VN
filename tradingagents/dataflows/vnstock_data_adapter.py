@@ -31,8 +31,33 @@ Supported functions (mirrors interface.py VENDOR_METHODS keys)
 from __future__ import annotations
 
 import importlib
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
+
+
+def _ensure_home_venv_on_path() -> None:
+    """Bridge ~/.venv site-packages into sys.path.
+
+    Sponsored vnstock libs (vnstock_ta, vnstock_news, etc.) are installed in
+    ~/.venv per the recommended setup. TradingAgents uses its own project venv,
+    so we insert the home venv's site-packages to make them importable here.
+    """
+    home_venv = Path.home() / ".venv"
+    if not home_venv.exists():
+        return
+    # Windows: Lib/site-packages  |  Unix: lib/python*/site-packages
+    candidates = list(home_venv.glob("Lib/site-packages"))
+    candidates += list(home_venv.glob("lib/python*/site-packages"))
+    for sp in candidates:
+        sp_str = str(sp)
+        if sp_str not in sys.path:
+            sys.path.insert(1, sp_str)
+            break
+
+
+_ensure_home_venv_on_path()
 
 # ---------------------------------------------------------------------------
 # Availability guard
@@ -160,6 +185,29 @@ def get_stock_data(
 # Technical indicators (best-effort via vnstock_ta or yfinance fallback hint)
 # ---------------------------------------------------------------------------
 
+def _compute_vn_ta_indicator(ta, indicator: str):
+    """Map stockstats-style indicator names to vnstock_ta category API."""
+    _map = {
+        "rsi":          lambda: ta.momentum.rsi(length=14),
+        "macd":         lambda: ta.momentum.macd(),
+        "macdh":        lambda: ta.momentum.macd(),
+        "macds":        lambda: ta.momentum.macd(),
+        "close_50_sma": lambda: ta.trend.sma(length=50),
+        "close_200_sma":lambda: ta.trend.sma(length=200),
+        "close_10_ema": lambda: ta.trend.ema(length=10),
+        "sma":          lambda: ta.trend.sma(length=20),
+        "ema":          lambda: ta.trend.ema(length=20),
+        "boll":         lambda: ta.volatility.bbands(),
+        "boll_ub":      lambda: ta.volatility.bbands(),
+        "boll_lb":      lambda: ta.volatility.bbands(),
+        "atr":          lambda: ta.volatility.atr(length=14),
+        "obv":          lambda: ta.volume.obv(),
+        "vwma":         lambda: ta.volume.obv(),
+    }
+    fn = _map.get(indicator)
+    return fn() if fn else None
+
+
 def get_indicators(
     symbol: str,
     indicator: str,
@@ -199,21 +247,26 @@ def get_indicators(
     if df is None or df.empty:
         return f"No price data available for {symbol} to compute '{indicator}'."
 
-    # Attempt vnstock_ta
+    # Attempt vnstock_ta (Indicator singular, category subcalls)
     try:
-        from vnstock_ta import Indicators  # type: ignore
-        ta = Indicators(df)
+        from vnstock_ta import Indicator  # type: ignore
+        ta = Indicator(data=df)
         ind_lower = indicator.strip().lower()
-        compute = getattr(ta, ind_lower, None)
-        if compute is not None:
-            df[ind_lower] = compute()
+        result = _compute_vn_ta_indicator(ta, ind_lower)
+        if result is not None:
+            import pandas as pd
+            result_df = pd.DataFrame({"time": df["time"], "close": df["close"]})
+            if hasattr(result, "columns"):
+                for col in result.columns:
+                    result_df[col] = result[col].values
+            else:
+                result_df[ind_lower] = result.values
             header = (
                 f"# Technical indicator '{indicator}' for {symbol.upper()}\n"
                 f"# Lookback: {look_back_days} days ending {curr_date}\n"
                 f"# Source: vnstock_data + vnstock_ta\n\n"
             )
-            cols = [c for c in df.columns if c in ("time", "date", "close", ind_lower)]
-            return header + df[cols].tail(look_back_days).to_csv(index=False)
+            return header + result_df.tail(look_back_days).to_csv(index=False)
     except ImportError:
         pass
     except Exception:
@@ -264,11 +317,24 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
         "- To compute P/E manually: P/E = (price_in_VND) / EPS = (close × 1,000) / EPS\n\n"
     )
 
+    # Financial health scorecard — auto-detects bank / securities / generic
+    try:
+        from vnstock_data.ui.fundamental import Fundamental as _FunUI  # type: ignore
+        df_health = _FunUI(source="mas").equity(sym).financial_health(
+            scorecard="auto", lang="vi", limit=4
+        )
+        if df_health is not None and not df_health.empty:
+            sections.append(
+                "## Financial Health Scorecard (industry-adjusted, VAS)\n"
+                + df_health.to_csv(index=False) + "\n"
+            )
+    except Exception as exc:
+        sections.append(f"## Financial Health Scorecard\nNot available: {exc}\n")
+
     # Financial ratios
     try:
         df_ratio = fun.equity(sym).ratio()
         if df_ratio is not None and not df_ratio.empty:
-            # Filter to rows on or before curr_date if a date column exists
             date_col = next(
                 (c for c in df_ratio.columns if "date" in c.lower() or "time" in c.lower() or "period" in c.lower()),
                 None,
@@ -461,31 +527,33 @@ def get_news(
 
     sym = ticker.upper()
 
-    # Attempt vnstock_news (optional sponsored library)
+    # Attempt vnstock_news (Crawler API)
     try:
-        from vnstock_news import StockNews  # type: ignore
-        news = StockNews(symbol=sym)
-        df = news.articles(start=start_date, end=end_date)
-        if df is not None and not df.empty:
+        from vnstock_news import Crawler  # type: ignore
+        crawler = Crawler()
+        articles = crawler.get_articles_from_feed(limit_per_feed=20) or []
+        relevant = [
+            a for a in articles
+            if sym in str(a.get("title", "")).upper()
+        ]
+        if not relevant:
+            relevant = articles[:10]
+        if relevant:
+            lines = [
+                f"[{a.get('published', '')}] {a.get('title', 'No title')}"
+                for a in relevant[:15]
+            ]
             header = (
                 f"# News for {sym} from {start_date} to {end_date}\n"
-                f"# Source: vnstock_news\n\n"
+                f"# Source: vnstock_news (Crawler — {len(relevant)} articles)\n\n"
             )
-            return header + df.to_string(index=False)
+            return header + "\n".join(lines)
     except ImportError:
         pass
     except Exception as exc:
-        return (
-            f"# News for {sym}\n"
-            f"vnstock_news error: {exc}\n"
-            f"Install vnstock_news for VN-specific news, or use yfinance fallback.\n"
-        )
+        return f"# News for {sym}\nvnstock_news error: {exc}\n"
 
-    return (
-        f"# News for {sym}\n"
-        f"vnstock_news is not installed. "
-        f"Install it for Vietnamese stock news, or the system will fall back to yfinance.\n"
-    )
+    return f"# News for {sym}\nvnstock_news not available — falling back to yfinance.\n"
 
 
 def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> str:
@@ -552,21 +620,25 @@ def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> s
     # ── 2. CafeF RSS headlines (free, no auth) ───────────────────────────────
     news_block = _fetch_cafef_headlines(sym)
 
-    # ── 3. vnstock_news (optional sponsored library) ─────────────────────────
-    vnstock_news_block = "vnstock_news: not installed."
+    # ── 3. vnstock_news Crawler ──────────────────────────────────────────────
+    vnstock_news_block = "vnstock_news: not available."
     try:
-        from vnstock_news import StockNews  # type: ignore
-        df_news = StockNews(symbol=sym).articles(
-            start=(end_dt - timedelta(days=7)).strftime("%Y-%m-%d"),
-            end=curr_date,
-        )
-        if df_news is not None and not df_news.empty:
+        from vnstock_news import Crawler  # type: ignore
+        articles = Crawler().get_articles_from_feed(limit_per_feed=15) or []
+        relevant = [a for a in articles if sym in str(a.get("title", "")).upper()]
+        if not relevant:
+            relevant = articles[:8]
+        if relevant:
+            lines = [
+                f"- [{a.get('published', '')}] {a.get('title', 'No title')}"
+                for a in relevant[:12]
+            ]
             vnstock_news_block = (
-                f"## vnstock_news headlines ({len(df_news)} articles)\n"
-                + df_news.to_string(index=False, max_rows=15)
+                f"## vnstock_news headlines ({len(relevant)} articles)\n"
+                + "\n".join(lines)
             )
     except ImportError:
-        vnstock_news_block = "vnstock_news: not installed (install for richer VN news)."
+        vnstock_news_block = "vnstock_news: not installed."
     except Exception as exc:
         vnstock_news_block = f"vnstock_news: error — {exc}"
 
