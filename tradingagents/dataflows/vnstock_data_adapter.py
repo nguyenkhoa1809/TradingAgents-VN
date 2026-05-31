@@ -208,6 +208,72 @@ def _compute_vn_ta_indicator(ta, indicator: str):
     return fn() if fn else None
 
 
+def _compute_indicator_pandas(df, indicator: str):
+    """Compute technical indicator from OHLCV using pure pandas — always works.
+
+    Used as fallback when vnstock_ta is unavailable or raises.
+    df must have columns: open, high, low, close, volume
+    """
+    import pandas as pd
+    import numpy as np
+
+    close  = df["close"].astype(float).reset_index(drop=True)
+    high   = df["high"].astype(float).reset_index(drop=True)
+    low    = df["low"].astype(float).reset_index(drop=True)
+    volume = df["volume"].astype(float).reset_index(drop=True)
+    ind = indicator.lower()
+
+    if ind == "rsi":
+        delta = close.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rs    = gain / loss.replace(0, float("nan"))
+        return pd.Series(100 - 100 / (1 + rs), name="rsi")
+
+    elif ind in ("macd", "macdh", "macds"):
+        ema12  = close.ewm(span=12, adjust=False).mean()
+        ema26  = close.ewm(span=26, adjust=False).mean()
+        macd_l = ema12 - ema26
+        signal = macd_l.ewm(span=9, adjust=False).mean()
+        return pd.DataFrame({"macd": macd_l, "macds": signal, "macdh": macd_l - signal})
+
+    elif ind == "close_50_sma":
+        return close.rolling(50).mean().rename("close_50_sma")
+
+    elif ind == "close_200_sma":
+        return close.rolling(200).mean().rename("close_200_sma")
+
+    elif ind == "close_10_ema":
+        return close.ewm(span=10, adjust=False).mean().rename("close_10_ema")
+
+    elif ind == "sma":
+        return close.rolling(20).mean().rename("sma_20")
+
+    elif ind == "ema":
+        return close.ewm(span=20, adjust=False).mean().rename("ema_20")
+
+    elif ind in ("boll", "boll_ub", "boll_lb"):
+        mid = close.rolling(20).mean()
+        std = close.rolling(20).std()
+        return pd.DataFrame({"boll": mid, "boll_ub": mid + 2*std, "boll_lb": mid - 2*std})
+
+    elif ind == "atr":
+        tr1 = high - low
+        tr2 = (high - close.shift()).abs()
+        tr3 = (low  - close.shift()).abs()
+        tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return tr.ewm(span=14, adjust=False).mean().rename("atr")
+
+    elif ind == "obv":
+        direction = np.sign(close.diff()).fillna(0)
+        return (direction * volume).cumsum().rename("obv")
+
+    elif ind == "vwma":
+        return ((close * volume).rolling(20).sum() / volume.rolling(20).sum()).rename("vwma")
+
+    return None
+
+
 def get_indicators(
     symbol: str,
     indicator: str,
@@ -247,38 +313,52 @@ def get_indicators(
     if df is None or df.empty:
         return f"No price data available for {symbol} to compute '{indicator}'."
 
-    # Attempt vnstock_ta (Indicator singular, category subcalls)
+    import pandas as pd
+    ind_lower = indicator.strip().lower()
+
+    # Build base DataFrame with time + close for output
+    time_col = "time" if "time" in df.columns else df.columns[0]
+    base = df[[time_col, "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+
+    result = None
+    source_tag = "pandas"
+
+    # Attempt vnstock_ta first (more accurate, handles edge cases)
     try:
         from vnstock_ta import Indicator  # type: ignore
         ta = Indicator(data=df)
-        ind_lower = indicator.strip().lower()
         result = _compute_vn_ta_indicator(ta, ind_lower)
         if result is not None:
-            import pandas as pd
-            result_df = pd.DataFrame({"time": df["time"], "close": df["close"]})
-            if hasattr(result, "columns"):
-                for col in result.columns:
-                    result_df[col] = result[col].values
-            else:
-                result_df[ind_lower] = result.values
-            header = (
-                f"# Technical indicator '{indicator}' for {symbol.upper()}\n"
-                f"# Lookback: {look_back_days} days ending {curr_date}\n"
-                f"# Source: vnstock_data + vnstock_ta\n\n"
-            )
-            return header + result_df.tail(look_back_days).to_csv(index=False)
-    except ImportError:
-        pass
+            source_tag = "vnstock_ta"
     except Exception:
         pass
 
-    # Fallback: return raw OHLCV with a note
+    # Fallback: pure-pandas computation — works for any OHLCV
+    if result is None:
+        result = _compute_indicator_pandas(df, ind_lower)
+
+    if result is not None:
+        result_df = base[[time_col, "close"]].copy()
+        if hasattr(result, "columns"):
+            for col in result.columns:
+                result_df[col] = result[col].values
+        else:
+            result_df[result.name if result.name else ind_lower] = result.values
+        header = (
+            f"# Indicator '{indicator}' for {symbol.upper()}\n"
+            f"# Lookback: {look_back_days} sessions ending {curr_date}\n"
+            f"# Source: {source_tag}\n"
+            f"# Price unit: thousands VND (close=157.7 means 157,700 VND/share)\n\n"
+        )
+        return header + result_df.tail(look_back_days).to_csv(index=False)
+
+    # Only reached for truly unknown indicator names
     header = (
-        f"# Raw OHLCV for {symbol.upper()} (indicator '{indicator}' not computed — "
-        f"install vnstock_ta for full indicator support)\n"
-        f"# Lookback: {look_back_days} days ending {curr_date}\n\n"
+        f"# OHLCV for {symbol.upper()} — indicator '{indicator}' not recognised\n"
+        f"# Available: rsi, macd, close_50_sma, close_200_sma, close_10_ema,\n"
+        f"#            boll/boll_ub/boll_lb, atr, obv, vwma\n\n"
     )
-    return header + df.tail(look_back_days).to_csv(index=False)
+    return header + base.tail(look_back_days).to_csv(index=False)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +397,8 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
         "- To compute P/E manually: P/E = (price_in_VND) / EPS = (close × 1,000) / EPS\n\n"
     )
 
+    import pandas as pd
+
     # Financial health scorecard — auto-detects bank / securities / generic
     try:
         from vnstock_data.ui.fundamental import Fundamental as _FunUI  # type: ignore
@@ -325,13 +407,13 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
         )
         if df_health is not None and not df_health.empty:
             sections.append(
-                "## Financial Health Scorecard (industry-adjusted, VAS)\n"
-                + df_health.to_csv(index=False) + "\n"
+                "## Financial Health Scorecard (industry-adjusted, VAS) — 4 most recent periods\n"
+                + df_health.tail(4).to_csv(index=False) + "\n"
             )
     except Exception as exc:
         sections.append(f"## Financial Health Scorecard\nNot available: {exc}\n")
 
-    # Financial ratios
+    # Financial ratios — limit to 8 most recent periods to prevent LLM using stale data
     try:
         df_ratio = fun.equity(sym).ratio()
         if df_ratio is not None and not df_ratio.empty:
@@ -341,13 +423,26 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
             )
             if date_col:
                 try:
-                    import pandas as pd
                     df_ratio[date_col] = pd.to_datetime(df_ratio[date_col], errors="coerce")
                     cutoff = pd.to_datetime(curr_date)
-                    df_ratio = df_ratio[df_ratio[date_col] <= cutoff]
+                    df_ratio = (
+                        df_ratio[df_ratio[date_col] <= cutoff]
+                        .sort_values(date_col)  # ensure chronological order
+                    )
                 except Exception:
                     pass
-            sections.append("## Financial Ratios\n" + df_ratio.tail(8).to_csv(index=False) + "\n")
+            # 4 most recent periods — avoids pre-listing or stale historical data
+            df_ratio = df_ratio.tail(4)
+            # Prepend a 1-row snapshot of the single most recent period for easy LLM reference
+            latest = df_ratio.iloc[[-1]]
+            sections.append(
+                "## Key Ratios — Most Recent Period (use these for current valuation)\n"
+                + latest.to_csv(index=False) + "\n"
+            )
+            sections.append(
+                "## Financial Ratios — Last 8 Periods\n"
+                + df_ratio.to_csv(index=False) + "\n"
+            )
     except Exception as exc:
         sections.append(f"## Financial Ratios\nNot available: {exc}\n")
 

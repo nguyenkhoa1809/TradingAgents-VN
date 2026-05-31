@@ -1,6 +1,7 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/scripts/python.exe",
   "python.analysis.extraPaths": [
-    "${workspaceFolder}/Lib/site-packages"
+    "${workspaceFolder}/Lib/site-packages",
+    "C:/Users/LENOVO/.venv/Lib/site-packages"
   ]
 }
