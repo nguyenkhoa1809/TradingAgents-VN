@@ -107,6 +107,70 @@ def _assert_unified_ui():
 # Helper utilities
 # ---------------------------------------------------------------------------
 
+import re as _re
+
+
+def _parse_quarter_period(series):
+    """Parse 'YYYY-Qn' period strings to Timestamps.
+
+    pd.to_datetime cannot handle 'YYYY-Q1' format and silently returns NaT,
+    which causes date filters to drop ALL rows. This helper handles both
+    formats: 'YYYY-Q1' and standard ISO dates.
+    """
+    def _one(s):
+        m = _re.match(r"(\d{4})-Q(\d)", str(s))
+        if m:
+            yr, q = int(m.group(1)), int(m.group(2))
+            return _pd.Timestamp(yr, (q - 1) * 3 + 1, 1)
+        return _pd.to_datetime(s, errors="coerce")
+
+    import pandas as _pd
+    return series.apply(_one)
+
+
+def _financial_to_billion(df):
+    """Convert raw-VND financial statement values to tỷ đồng (VND billion).
+
+    vnstock_data balance sheet / income statement / cash flow return values
+    in raw VND (đồng). Dividing by 1e9 produces tỷ đồng, matching the scale
+    analysts expect (e.g. 870,000 tỷ total assets for VHM Q1 2026).
+    Only applies to numeric columns; non-numeric (period, labels) are kept.
+    """
+    df = df.copy()
+    for col in df.columns:
+        if col == "period":
+            continue
+        try:
+            df[col] = df[col].astype(float) / 1_000_000_000
+        except (TypeError, ValueError):
+            pass  # skip non-numeric columns
+    return df
+
+
+def _filter_and_limit_periods(df, curr_date: str, n: int = 4):
+    """Filter rows to curr_date and return the n most-recent periods.
+
+    Handles the 'YYYY-Qn' period format that pd.to_datetime cannot parse.
+    Data from vnstock_data is sorted newest-first; head(n) after ensuring
+    date ≤ cutoff returns the n most recent valid periods.
+    """
+    import pandas as _pd
+    date_col = next(
+        (c for c in df.columns
+         if c in ("period",) or "date" in c.lower() or "time" in c.lower()),
+        None,
+    )
+    if date_col is None:
+        return df.head(n)
+
+    parsed = _parse_quarter_period(df[date_col])
+    cutoff = _pd.Timestamp(curr_date)
+    mask = parsed.notna() & (parsed <= cutoff)
+    filtered = df[mask].copy()
+    # Data arrives newest-first; head(n) gives n most-recent periods.
+    return filtered.head(n) if not filtered.empty else df.head(n)
+
+
 def _df_to_str(df, header: str = "") -> str:
     """Convert a DataFrame to a readable CSV string with an optional header."""
     if df is None or df.empty:
@@ -417,24 +481,10 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     try:
         df_ratio = fun.equity(sym).ratio()
         if df_ratio is not None and not df_ratio.empty:
-            date_col = next(
-                (c for c in df_ratio.columns if "date" in c.lower() or "time" in c.lower() or "period" in c.lower()),
-                None,
-            )
-            if date_col:
-                try:
-                    df_ratio[date_col] = pd.to_datetime(df_ratio[date_col], errors="coerce")
-                    cutoff = pd.to_datetime(curr_date)
-                    df_ratio = (
-                        df_ratio[df_ratio[date_col] <= cutoff]
-                        .sort_values(date_col)  # ensure chronological order
-                    )
-                except Exception:
-                    pass
-            # 4 most recent periods — avoids pre-listing or stale historical data
-            df_ratio = df_ratio.tail(4)
-            # Prepend a 1-row snapshot of the single most recent period for easy LLM reference
-            latest = df_ratio.iloc[[-1]]
+            # Use _filter_and_limit_periods to handle 'YYYY-Qn' format correctly
+            df_ratio = _filter_and_limit_periods(df_ratio, curr_date, n=4)
+            # Snapshot of the single most recent period (data is newest-first → row 0)
+            latest = df_ratio.iloc[[0]]
             sections.append(
                 "## Key Ratios — Most Recent Period (use these for current valuation)\n"
                 + latest.to_csv(index=False) + "\n"
@@ -479,20 +529,13 @@ def get_balance_sheet(
     except Exception as exc:
         return f"# Balance sheet for {sym}\nNot available: {exc}\n"
 
-    if df is not None and not df.empty and curr_date:
-        date_col = next(
-            (c for c in df.columns if "date" in c.lower() or "time" in c.lower() or "period" in c.lower()),
-            None,
-        )
-        if date_col:
-            try:
-                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-                df = df[df[date_col] <= pd.to_datetime(curr_date)]
-            except Exception:
-                pass
+    if df is not None and not df.empty:
+        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=4)
+        df = _financial_to_billion(df)
 
     header = (
-        f"# Balance sheet for {sym} ({freq})\n"
+        f"# Balance sheet for {sym} ({freq}) — 4 most recent periods\n"
+        f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
         f"# Source: vnstock_data\n\n"
     )
     return _df_to_str(df, header)
@@ -528,20 +571,13 @@ def get_cashflow(
     except Exception as exc:
         return f"# Cash flow for {sym}\nNot available: {exc}\n"
 
-    if df is not None and not df.empty and curr_date:
-        date_col = next(
-            (c for c in df.columns if "date" in c.lower() or "time" in c.lower() or "period" in c.lower()),
-            None,
-        )
-        if date_col:
-            try:
-                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-                df = df[df[date_col] <= pd.to_datetime(curr_date)]
-            except Exception:
-                pass
+    if df is not None and not df.empty:
+        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=4)
+        df = _financial_to_billion(df)
 
     header = (
-        f"# Cash flow for {sym} ({freq})\n"
+        f"# Cash flow for {sym} ({freq}) — 4 most recent periods\n"
+        f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
         f"# Source: vnstock_data\n\n"
     )
     return _df_to_str(df, header)
@@ -577,20 +613,13 @@ def get_income_statement(
     except Exception as exc:
         return f"# Income statement for {sym}\nNot available: {exc}\n"
 
-    if df is not None and not df.empty and curr_date:
-        date_col = next(
-            (c for c in df.columns if "date" in c.lower() or "time" in c.lower() or "period" in c.lower()),
-            None,
-        )
-        if date_col:
-            try:
-                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-                df = df[df[date_col] <= pd.to_datetime(curr_date)]
-            except Exception:
-                pass
+    if df is not None and not df.empty:
+        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=4)
+        df = _financial_to_billion(df)
 
     header = (
-        f"# Income statement for {sym} ({freq})\n"
+        f"# Income statement for {sym} ({freq}) — 4 most recent periods\n"
+        f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
         f"# Source: vnstock_data\n\n"
     )
     return _df_to_str(df, header)
