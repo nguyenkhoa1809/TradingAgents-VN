@@ -42,6 +42,7 @@ from tradingagents.agents.utils.structured import (
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 from tradingagents.dataflows.market_router import is_vn_ticker
+from tradingagents.dataflows.vnstock_data_adapter import get_vn_sentiment, VnstockDataUnavailableError
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -65,14 +66,21 @@ def create_sentiment_analyst(llm):
         instrument_context = get_instrument_context_from_state(state)
         _is_vn = is_vn_ticker(ticker)
 
-        # Pre-fetch all three sources. Each fetcher degrades gracefully and
-        # returns a string (no exceptions surface from here), so the LLM
-        # always sees something — either real data or a clear placeholder.
-        news_block = get_news.func(ticker, start_date, end_date)
-        # StockTwits and Reddit return empty/placeholder for VN tickers —
-        # that is expected; the VN prompt guidance handles interpretation.
-        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        if _is_vn:
+            # VN path: price-band sentiment + CafeF + vnstock_news.
+            # Reddit and StockTwits have no VN coverage — skip them entirely.
+            try:
+                vn_block = get_vn_sentiment(ticker, end_date)
+            except VnstockDataUnavailableError as e:
+                vn_block = f"VN sentiment data unavailable: {e}"
+            news_block      = vn_block
+            stocktwits_block = ""
+            reddit_block     = ""
+        else:
+            # Global path: original three sources unchanged.
+            news_block       = get_news.func(ticker, start_date, end_date)
+            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+            reddit_block     = fetch_reddit_posts(ticker)
 
         system_message = _build_system_message(
             ticker=ticker,

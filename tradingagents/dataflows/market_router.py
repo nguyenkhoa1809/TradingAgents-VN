@@ -34,38 +34,14 @@ from typing import Optional
 # Reference data
 # ---------------------------------------------------------------------------
 
-# Representative set of VN30 constituent tickers (2024 basket).
-# Used only for documentation / optional external validation — the regex
-# rule is the authoritative detector.
-VN_TICKERS_REFERENCE: frozenset[str] = frozenset({
-    # Banking
-    "VCB", "BID", "CTG", "MBB", "TCB", "VPB", "ACB", "HDB", "STB", "OCB",
-    # Financials / securities
-    "SSI", "VND", "HCM", "VCI", "FTS",
-    # Real estate
-    "VHM", "VIC", "NVL", "PDR", "KDH", "DXG",
-    # Consumer / retail
-    "MSN", "VNM", "SAB", "MWG", "PNJ",
-    # Industrials / energy
-    "HPG", "HSG", "NKG", "GAS", "PLX", "PVD", "PVS",
-    # Technology / telco
-    "FPT", "CMG",
-    # Diversified / other
-    "VJC", "HVN", "REE", "GMD", "DCM", "DPM",
-})
-
-# Tickers that look like VN letters but are NOT plain equities routed to
-# vnstock_data: indices, futures contracts, ETFs with digits, crypto tickers
-# commonly typed in ALL-CAPS.
+# Explicit exclusions: tickers that are 2-3 uppercase letters but are NOT
+# VN equities. US tickers (IBM, AMD...) don't need listing here — if
+# vnstock_data can't find them it raises VnstockDataUnavailableError and
+# falls back to yfinance automatically. Only list symbols that ARE valid
+# vnstock_data lookups but should route to "global" anyway.
 _VN_EXCLUSIONS: frozenset[str] = frozenset({
-    # Indices
-    "VNINDEX", "HNX", "UPCOM", "VN30", "HNX30",
-    # Common crypto (3-letter ALL-CAPS that would otherwise match)
-    "BTC", "ETH", "XRP", "BNB", "SOL", "ADA", "DOT", "LTC", "TRX", "XLM",
-    "BCH", "ETC", "VET", "XTZ", "EOS", "ZEC", "XMR", "DASH", "NEO",
-    # US tickers that are 2-3 uppercase letters
-    "IBM", "AMD", "JPM", "BAC", "GS", "MS", "UPS", "UNH", "CVS",
-    "CVX", "XOM", "PFE", "MRK", "JNJ", "KO", "PG", "WM",
+    "VNINDEX", "HNX", "UPCOM", "VN30", "HNX30",  # VN indices, not equities
+    "BTC", "ETH", "XRP", "BNB", "SOL",            # common crypto 3-letter
 })
 
 # Regex: exactly 2 or 3 ASCII uppercase letters, nothing else.

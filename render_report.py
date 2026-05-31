@@ -116,13 +116,29 @@ PHASE_LABELS = {
 }
 
 SIGNAL_STYLES = {
-    "BUY":      ("🟢", "#10b981", "#052e16", "BUY"),
-    "STRONG BUY":("🚀","#10b981", "#052e16", "STRONG BUY"),
-    "SELL":     ("🔴", "#ef4444", "#450a0a", "SELL"),
-    "STRONG SELL":("🔻","#ef4444","#450a0a","STRONG SELL"),
-    "HOLD":     ("🟡", "#f59e0b", "#451a03", "HOLD"),
-    "NEUTRAL":  ("⚪", "#6b7280", "#1f2937", "NEUTRAL"),
+    "STRONG BUY":  ("🚀", "#10b981", "#052e16", "STRONG BUY"),
+    "STRONG SELL": ("🔻", "#ef4444", "#450a0a", "STRONG SELL"),
+    "BUY":         ("🟢", "#10b981", "#052e16", "BUY"),
+    "SELL":        ("🔴", "#ef4444", "#450a0a", "SELL"),
+    "UNDERWEIGHT": ("🔴", "#ef4444", "#450a0a", "UNDERWEIGHT"),
+    "OVERWEIGHT":  ("🟢", "#10b981", "#052e16", "OVERWEIGHT"),
+    "HOLD":        ("🟡", "#f59e0b", "#451a03", "HOLD"),
+    "NEUTRAL":     ("⚪", "#6b7280", "#1f2937", "NEUTRAL"),
 }
+
+import re as _re
+# Match authoritative signal lines in priority order:
+#   1. "FINAL TRANSACTION PROPOSAL: **HOLD**"  (Trader/Risk agents)
+#   2. "**Rating**: Underweight"               (Portfolio Manager)
+#   3. "**Action**: Hold"                      (Portfolio Manager alternate)
+_SIGNAL_KEYWORDS = r"(STRONG\s+BUY|STRONG\s+SELL|UNDERWEIGHT|OVERWEIGHT|BUY|SELL|HOLD|NEUTRAL)"
+_FINAL_LINE_RE = _re.compile(
+    r"(?:FINAL\s+(?:TRANSACTION\s+PROPOSAL|DECISION)"  # pattern 1
+    r"|(?:\*{0,2}Rating\*{0,2}\s*:)"                   # pattern 2
+    r"|(?:\*{0,2}Action\*{0,2}\s*:)"                   # pattern 3
+    r")\s*\**\s*" + _SIGNAL_KEYWORDS,
+    _re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +146,20 @@ SIGNAL_STYLES = {
 # ---------------------------------------------------------------------------
 
 def detect_signal(text: str) -> tuple[str, str, str, str]:
-    """Return (emoji, fg_color, bg_color, label) for the trading signal."""
+    """Return (emoji, fg_color, bg_color, label) for the trading signal.
+
+    Strategy:
+    1. Look for a 'FINAL TRANSACTION PROPOSAL' / 'FINAL DECISION' line and
+       extract the signal keyword from that line only — avoids false matches
+       from bull/bear discussion text that also contains 'BUY'/'SELL'.
+    2. Fall back to first keyword match if no final-line found.
+    """
+    m = _FINAL_LINE_RE.search(text)
+    if m:
+        keyword = m.group(1).upper().replace("  ", " ")
+        return SIGNAL_STYLES.get(keyword, ("⚪", "#6b7280", "#1f2937", keyword))
+
+    # Fallback: scan whole text (legacy behaviour for complete_report.md format)
     upper = text.upper()
     for key, val in SIGNAL_STYLES.items():
         if key in upper:

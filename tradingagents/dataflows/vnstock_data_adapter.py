@@ -31,7 +31,6 @@ Supported functions (mirrors interface.py VENDOR_METHODS keys)
 from __future__ import annotations
 
 import importlib
-import textwrap
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -70,19 +69,13 @@ def _get_version() -> str:
 
 def _assert_unified_ui():
     """Ensure vnstock_data >= 3.0.0 (Unified UI) is installed."""
-    from packaging.version import Version  # packaging ships with pip
     ver = _get_version()
-    try:
-        if Version(ver) < Version("3.0.0"):
-            raise VnstockDataUnavailableError(
-                f"vnstock_data {ver} is too old. "
-                "Upgrade to >= 3.0.0 for the Unified UI: pip install -U vnstock_data"
-            )
-    except Exception as exc:
-        # packaging might not be available — be lenient
-        if "is too old" in str(exc):
-            raise
-        # version comparison failed, proceed optimistically
+    # Simple string prefix check — avoids packaging dependency
+    major = int(ver.split(".")[0]) if ver[0].isdigit() else 0
+    if major < 3:
+        raise VnstockDataUnavailableError(
+            f"vnstock_data {ver} is too old. Upgrade: pip install -U vnstock_data"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +140,18 @@ def get_stock_data(
             f"({start_date} to {end_date}): {exc}"
         )
 
+    # Get the last close for a quick reference note
+    last_close = df["close"].iloc[-1] if not df.empty else "N/A"
+    last_date  = str(df["time"].iloc[-1])[:10] if not df.empty else "N/A"
+
     header = (
         f"# VN stock data for {symbol.upper()} from {start_date} to {end_date}\n"
         f"# Source: vnstock_data (Unified UI)\n"
-        f"# Total records: {len(df)}\n\n"
+        f"# Total records: {len(df)}\n"
+        f"# IMPORTANT — PRICE UNIT: all price columns (open/high/low/close) are in\n"
+        f"#   THOUSANDS of VND (nghìn đồng). Multiply by 1,000 for the actual VND price.\n"
+        f"#   Example: close=62.0 means 62,000 VND per share (NOT 62 VND).\n"
+        f"#   Latest close: {last_close} (= {float(last_close)*1000:,.0f} VND/share) on {last_date}\n\n"
     )
     return _df_to_str(df, header)
 
@@ -253,6 +254,15 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     ]
 
     fun = Fundamental()
+
+    sections.append(
+        "## UNIT NOTES (read before interpreting any numbers below)\n"
+        "- Stock price / market price: in THOUSANDS of VND (nghìn đồng).\n"
+        "  e.g. price=62.0 means 62,000 VND/share. Use 62,000 VND when calculating P/E.\n"
+        "- EPS, book value per share: in full VND (e.g. EPS=4,500 means 4,500 VND/share).\n"
+        "- Financial statement line items (revenue, profit, assets): in BILLIONS of VND (tỷ đồng).\n"
+        "- To compute P/E manually: P/E = (price_in_VND) / EPS = (close × 1,000) / EPS\n\n"
+    )
 
     # Financial ratios
     try:
@@ -478,11 +488,138 @@ def get_news(
     )
 
 
-def get_global_news(
-    curr_date: str,
-    look_back_days: Optional[int] = None,
-    limit: Optional[int] = None,
+def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> str:
+    """Build a VN-specific sentiment block from price-band behavior + news.
+
+    Combines three signals without duplicating TA indicator work:
+      1. Ceiling/floor hit counts  → crowd psychology (distinct from RSI/MACD)
+      2. Volume anomaly detection  → institutional vs retail behavior
+      3. CafeF headlines + vnstock_news (best-effort, degrades gracefully)
+
+    Args:
+        ticker:         VN ticker, e.g. "VCB".
+        curr_date:      Reference date "YYYY-MM-DD".
+        look_back_days: Window for price-band and volume analysis.
+    """
+    _require_vnstock_data()
+    sym = ticker.upper()
+    end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+    start_dt = end_dt - timedelta(days=look_back_days + 10)
+
+    # ── 1. Price-band sentiment from OHLCV ──────────────────────────────────
+    price_block = "Price-band sentiment: data unavailable."
+    try:
+        from vnstock_data import Market
+        df = Market().equity(sym).ohlcv(
+            start=start_dt.strftime("%Y-%m-%d"), end=curr_date
+        )
+        if df is not None and not df.empty:
+            import pandas as pd
+            df = df.tail(look_back_days).copy()
+            n = len(df)
+            # Ceiling hit: close ≈ high AND gain ≥ +6.5% (within ±0.5% of +7% band)
+            df["pct_chg"] = df["close"].pct_change() * 100
+            ceiling_hits = int((df["pct_chg"] >= 6.5).sum())
+            floor_hits   = int((df["pct_chg"] <= -6.5).sum())
+            # Consecutive ceiling/floor at end of window
+            recent = df.tail(5)["pct_chg"]
+            consec_ceil  = int(recent.ge(6.5).sum())
+            consec_floor = int(recent.le(-6.5).sum())
+            # Volume anomaly: days with volume > 2× rolling 20-day mean
+            vol_mean = df["volume"].mean()
+            vol_spikes = int((df["volume"] > 2 * vol_mean).sum())
+            last_close = float(df["close"].iloc[-1])
+            last_vol   = int(df["volume"].iloc[-1])
+            vol_ratio  = last_vol / vol_mean if vol_mean > 0 else 1.0
+
+            price_block = (
+                f"## Price-Band Sentiment ({sym}, last {n} sessions ending {curr_date})\n"
+                f"NOTE: prices in thousands VND — last close {last_close} = {last_close*1000:,.0f} VND/share\n\n"
+                f"**Ceiling hits (gia tran, ≥+6.5%)**: {ceiling_hits}/{n} sessions"
+                + (f" — incl. {consec_ceil}/5 in last 5 sessions (STRONG BULLISH retail rush)\n"
+                   if consec_ceil >= 2 else "\n")
+                + f"**Floor hits (gia san, ≤-6.5%)**: {floor_hits}/{n} sessions"
+                + (f" — incl. {consec_floor}/5 in last 5 sessions (PANIC / margin-call cascade)\n"
+                   if consec_floor >= 2 else "\n")
+                + f"**Volume spikes (>2× avg)**: {vol_spikes}/{n} sessions\n"
+                + f"**Latest session volume**: {last_vol:,} ({vol_ratio:.1f}× 20-day avg)\n\n"
+                + _interpret_price_band(ceiling_hits, floor_hits, consec_ceil, consec_floor,
+                                        vol_ratio, n)
+            )
+    except Exception as exc:
+        price_block = f"Price-band sentiment: error — {exc}"
+
+    # ── 2. CafeF RSS headlines (free, no auth) ───────────────────────────────
+    news_block = _fetch_cafef_headlines(sym)
+
+    # ── 3. vnstock_news (optional sponsored library) ─────────────────────────
+    vnstock_news_block = "vnstock_news: not installed."
+    try:
+        from vnstock_news import StockNews  # type: ignore
+        df_news = StockNews(symbol=sym).articles(
+            start=(end_dt - timedelta(days=7)).strftime("%Y-%m-%d"),
+            end=curr_date,
+        )
+        if df_news is not None and not df_news.empty:
+            vnstock_news_block = (
+                f"## vnstock_news headlines ({len(df_news)} articles)\n"
+                + df_news.to_string(index=False, max_rows=15)
+            )
+    except ImportError:
+        vnstock_news_block = "vnstock_news: not installed (install for richer VN news)."
+    except Exception as exc:
+        vnstock_news_block = f"vnstock_news: error — {exc}"
+
+    return (
+        f"# VN Sentiment Data for {sym} — {curr_date}\n\n"
+        f"{price_block}\n\n"
+        f"## CafeF Headlines\n{news_block}\n\n"
+        f"{vnstock_news_block}\n"
+    )
+
+
+def _interpret_price_band(
+    ceiling_hits: int, floor_hits: int,
+    consec_ceil: int, consec_floor: int,
+    vol_ratio: float, n: int,
 ) -> str:
+    """Translate price-band counts into a plain-language sentiment label."""
+    if consec_ceil >= 3:
+        label = "STRONGLY BULLISH — retail demand overwhelming supply (3+ ceiling days)"
+    elif consec_ceil >= 2 or ceiling_hits >= n * 0.3:
+        label = "BULLISH — consistent upward pressure hitting daily band limit"
+    elif consec_floor >= 3:
+        label = "STRONGLY BEARISH — panic / forced selling (3+ floor days)"
+    elif consec_floor >= 2 or floor_hits >= n * 0.3:
+        label = "BEARISH — persistent selling pressure at lower band"
+    elif vol_ratio >= 3:
+        label = "ELEVATED ACTIVITY — volume spike; direction unclear, watch next session"
+    else:
+        label = "NEUTRAL — no extreme band behavior in observation window"
+    return f"**Crowd-psychology signal**: {label}\n"
+
+
+def _fetch_cafef_headlines(ticker: str) -> str:
+    """Scrape recent CafeF headlines for a VN ticker. Degrades silently."""
+    try:
+        import urllib.request, urllib.parse, re
+        # Google News RSS — reliable, no scraping, Vietnamese results
+        query = urllib.parse.quote(f"{ticker} cổ phiếu")
+        url = f"https://news.google.com/rss/search?q={query}&hl=vi&gl=VN&ceid=VN:vi"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            xml = resp.read().decode("utf-8", errors="replace")
+        titles = re.findall(r"<title><!\[CDATA\[(.+?)\]\]></title>", xml)
+        titles = [t for t in titles if ticker in t or "VCB" in t or len(t) > 20][1:9]
+        if titles:
+            lines = "\n".join(f"- {t.strip()}" for t in titles)
+            return f"({len(titles)} headlines via Google News)\n{lines}"
+        return "No relevant headlines found."
+    except Exception as exc:
+        return f"News fetch skipped: {exc}"
+
+
+def get_global_news(*_, **__) -> str:
     """Not supported by vnstock_data — always raises to trigger fallback."""
     raise VnstockDataUnavailableError(
         "vnstock_data does not provide global macro news. "
@@ -490,7 +627,7 @@ def get_global_news(
     )
 
 
-def get_insider_transactions(ticker: str) -> str:
+def get_insider_transactions(*_, **__) -> str:
     """Not supported by vnstock_data — always raises to trigger fallback."""
     raise VnstockDataUnavailableError(
         "vnstock_data does not provide insider transaction data for VN equities. "
