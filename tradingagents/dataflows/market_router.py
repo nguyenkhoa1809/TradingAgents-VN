@@ -40,12 +40,20 @@ from typing import Optional
 # falls back to yfinance automatically. Only list symbols that ARE valid
 # vnstock_data lookups but should route to "global" anyway.
 _VN_EXCLUSIONS: frozenset[str] = frozenset({
-    "VNINDEX", "HNX", "UPCOM", "VN30", "HNX30",  # VN indices, not equities
-    "BTC", "ETH", "XRP", "BNB", "SOL",            # common crypto 3-letter
+    # VN indices / derivatives
+    "VNINDEX", "HNX", "UPCOM", "VN30", "HNX30",
+    # Common crypto (3-letter)
+    "BTC", "ETH", "XRP", "BNB", "SOL",
+    # Well-known US tickers that are exactly 3 letters
+    # (data falls back to yfinance anyway, but this also fixes prompt context)
+    "IBM", "AMD", "UPS", "JNJ", "MMM", "HON", "CAT", "AIG",
+    "BAC", "WFC", "USB", "JPM", "GLD", "SLV", "USO", "TLT",
+    "UAL", "DAL", "LUV", "AAL", "CVX", "XOM", "COP", "DVN",
 })
 
-# Regex: exactly 2 or 3 ASCII uppercase letters, nothing else.
-_VN_EQUITY_RE = re.compile(r"^[A-Z]{2,3}$")
+# Regex: exactly 3 ASCII uppercase letters, nothing else.
+# All HOSE/HNX equities are 3-letter codes. Excluding 2-letter catches GE, BA, GM etc.
+_VN_EQUITY_RE = re.compile(r"^[A-Z]{3}$")
 
 # Regex patterns for obvious non-VN tickers — matched BEFORE the letter rule.
 _GLOBAL_PATTERNS = [
