@@ -600,6 +600,29 @@ def get_income_statement(
 # News — VN-specific
 # ---------------------------------------------------------------------------
 
+# Working vnstock_news sites (verified: cafebiz, vietstock have RSS feeds)
+_VN_NEWS_SITES = ["cafebiz", "vietstock", "vnexpress"]
+
+
+def _crawl_vn_news(limit_per_feed: int = 20) -> list:
+    """Fetch articles from working VN financial news sites via vnstock_news.
+
+    Tries each site in priority order and returns combined article list.
+    Silently skips any site that errors — degrades to fewer sources, not failure.
+    """
+    from vnstock_news import Crawler  # type: ignore
+    articles: list = []
+    for site in _VN_NEWS_SITES:
+        try:
+            batch = Crawler(site_name=site).get_articles_from_feed(
+                limit_per_feed=limit_per_feed
+            ) or []
+            articles.extend(batch)
+        except Exception:
+            continue
+    return articles
+
+
 def get_news(
     ticker: str,
     start_date: str,
@@ -622,11 +645,10 @@ def get_news(
 
     sym = ticker.upper()
 
-    # Attempt vnstock_news (Crawler API)
+    # Attempt vnstock_news (Crawler API) — try financial sites in priority order
     try:
         from vnstock_news import Crawler  # type: ignore
-        crawler = Crawler()
-        articles = crawler.get_articles_from_feed(limit_per_feed=20) or []
+        articles = _crawl_vn_news(limit_per_feed=20)
         relevant = [
             a for a in articles
             if sym in str(a.get("title", "")).upper()
@@ -718,8 +740,8 @@ def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> s
     # ── 3. vnstock_news Crawler ──────────────────────────────────────────────
     vnstock_news_block = "vnstock_news: not available."
     try:
-        from vnstock_news import Crawler  # type: ignore
-        articles = Crawler().get_articles_from_feed(limit_per_feed=15) or []
+        from vnstock_news import Crawler  # type: ignore  # noqa: F401
+        articles = _crawl_vn_news(limit_per_feed=15)
         relevant = [a for a in articles if sym in str(a.get("title", "")).upper()]
         if not relevant:
             relevant = articles[:8]
