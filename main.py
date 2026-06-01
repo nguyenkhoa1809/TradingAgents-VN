@@ -15,13 +15,21 @@ TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
 
 # PROVIDER — change this one line to switch LLM provider
 #
-# Preset         deep_think model      quick_think model    ~cost/run
-# ─────────────────────────────────────────────────────────────────────
-# "claude"       claude-sonnet-4-6     claude-haiku-4-5     ~$0.35
-# "claude-opus"  claude-opus-4-8       claude-haiku-4-5     ~$1.50  (best quality)
-# "deepseek"     deepseek-reasoner     deepseek-chat        ~$0.03  (10x cheaper)
-# "openai"       gpt-5.5               gpt-5.4-mini         ~$0.40
-# "openai-cheap" gpt-5.4               gpt-5.4-nano         ~$0.10
+# PROVIDER — change this one line to switch LLM provider
+#
+# Preset            deep_think model                  quick_think model             ~cost/run
+# ───────────────────────────────────────────────────────────────────────────────────────────
+# "claude"          claude-sonnet-4-6                 claude-haiku-4-5              ~$0.35
+# "claude-opus"     claude-opus-4-8                   claude-haiku-4-5              ~$1.50
+# "deepseek"        deepseek-reasoner                 deepseek-chat                 ~$0.03
+# "openai"          gpt-5.5                           gpt-5.4-mini                  ~$0.40
+# "openai-cheap"    gpt-5.4                           gpt-5.4-nano                  ~$0.10
+# "openrouter"      google/gemini-2.5-pro             google/gemini-2.5-flash       ~$0.05
+# "openrouter-free" meta-llama/llama-3.3-70b          meta-llama/llama-3.3-70b      ~$0.00*
+#                   * free models have rate limits, may be slow
+#
+# OpenRouter model IDs: see https://openrouter.ai/models  (format: provider/model-name)
+# Requires OPENROUTER_API_KEY in .env
 PROVIDER = "claude"
 
 _PROVIDER_PRESETS = {
@@ -49,6 +57,16 @@ _PROVIDER_PRESETS = {
         "llm_provider":   "openai",
         "deep_think_llm": "gpt-5.4",
         "quick_think_llm":"gpt-5.4-nano",
+    },
+    "openrouter": {
+        "llm_provider":   "openrouter",
+        "deep_think_llm": "google/gemini-2.5-pro",
+        "quick_think_llm":"google/gemini-2.5-flash",
+    },
+    "openrouter-free": {
+        "llm_provider":   "openrouter",
+        "deep_think_llm": "meta-llama/llama-3.3-70b-instruct",
+        "quick_think_llm":"meta-llama/llama-3.3-70b-instruct",
     },
 }
 
