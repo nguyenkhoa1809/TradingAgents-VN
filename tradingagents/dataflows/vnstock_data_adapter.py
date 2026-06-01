@@ -429,6 +429,84 @@ def get_indicators(
 # Fundamental data
 # ---------------------------------------------------------------------------
 
+def _compute_ttm_metrics(sym: str, curr_date: str, fun) -> str:
+    """Compute Trailing Twelve Month (TTM) profitability metrics.
+
+    CRITICAL: These metrics MUST use 4-quarter sums for income items, not
+    a single quarter. Using one quarter and treating it as annual understates
+    ROE by ~4x and leads to completely wrong valuation conclusions.
+
+    Metrics computed here are authoritative — the LLM must NOT recompute
+    them from raw quarterly figures.
+    """
+    try:
+        from vnstock_data import Fundamental  # type: ignore
+
+        # ── Income statement: sum 4 quarters for TTM ──────────────────────
+        is_df = fun.equity(sym).income_statement(period="quarter")
+        is_df = _filter_and_limit_periods(is_df, curr_date, n=4)
+        is_df = _financial_to_billion(is_df)
+
+        # ── Balance sheet: latest quarter for point-in-time items ─────────
+        bs_df = fun.equity(sym).balance_sheet(period="quarter")
+        bs_df = _filter_and_limit_periods(bs_df, curr_date, n=1)
+        bs_df = _financial_to_billion(bs_df)
+
+        if is_df.empty or bs_df.empty:
+            return "## TTM Profitability Metrics\nInsufficient data.\n"
+
+        periods_used = is_df["period"].tolist() if "period" in is_df.columns else []
+
+        def _ttm(col):
+            return is_df[col].sum() if col in is_df.columns else None
+
+        def _latest(df, col):
+            return df[col].iloc[0] if col in df.columns and not df.empty else None
+
+        ttm_net    = _ttm("net_profit_after_tax")
+        ttm_rev    = _ttm("net_revenue")
+        ttm_op     = _ttm("operating_profit")
+        equity     = _latest(bs_df, "owners_equity")
+        assets     = _latest(bs_df, "total_assets")
+
+        lines = [
+            "## ⚠ PRE-COMPUTED TTM PROFITABILITY METRICS — USE THESE, DO NOT RECOMPUTE",
+            f"# Periods summed: {', '.join(periods_used)} (Trailing Twelve Months)",
+            f"# UNIT: tỷ đồng (VND billion)",
+            "",
+        ]
+
+        if ttm_net is not None and equity and equity > 0:
+            roe = ttm_net / equity
+            lines.append(f"ROE  (TTM, annualized) : {roe:.2%}   ← USE THIS, not quarterly figure")
+        if ttm_net is not None and assets and assets > 0:
+            roa = ttm_net / assets
+            lines.append(f"ROA  (TTM, annualized) : {roa:.2%}")
+        if ttm_net is not None and ttm_rev and ttm_rev > 0:
+            npm = ttm_net / ttm_rev
+            lines.append(f"Net Profit Margin (TTM): {npm:.2%}")
+        if ttm_op is not None and ttm_rev and ttm_rev > 0:
+            opm = ttm_op / ttm_rev
+            lines.append(f"Operating Margin  (TTM): {opm:.2%}")
+
+        lines += [
+            "",
+            f"TTM Net Income    : {ttm_net:,.1f} tỷ  (sum of {len(is_df)} quarters)" if ttm_net else "",
+            f"TTM Revenue       : {ttm_rev:,.1f} tỷ" if ttm_rev else "",
+            f"TTM Operating P&L : {ttm_op:,.1f} tỷ" if ttm_op else "",
+            f"Latest Equity     : {equity:,.1f} tỷ  (point-in-time, {bs_df['period'].iloc[0] if 'period' in bs_df.columns else ''})" if equity else "",
+            f"Latest Total Assets: {assets:,.1f} tỷ" if assets else "",
+            "",
+            "⚠ WARNING: Do NOT divide a single quarter's net income by equity to get ROE.",
+            "   Doing so underestimates ROE by ~4x and leads to wrong valuation conclusions.",
+        ]
+
+        return "\n".join(l for l in lines if l is not None) + "\n"
+
+    except Exception as exc:
+        return f"## TTM Profitability Metrics\nError: {exc}\n"
+
+
 def get_fundamentals(ticker: str, curr_date: str) -> str:
     """Fetch key financial ratios and fundamental metrics for a VN equity.
 
@@ -453,15 +531,17 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     fun = Fundamental()
 
     sections.append(
-        "## UNIT NOTES (read before interpreting any numbers below)\n"
-        "- Stock price / market price: in THOUSANDS of VND (nghìn đồng).\n"
-        "  e.g. price=62.0 means 62,000 VND/share. Use 62,000 VND when calculating P/E.\n"
-        "- EPS, book value per share: in full VND (e.g. EPS=4,500 means 4,500 VND/share).\n"
-        "- Financial statement line items (revenue, profit, assets): in BILLIONS of VND (tỷ đồng).\n"
-        "- To compute P/E manually: P/E = (price_in_VND) / EPS = (close × 1,000) / EPS\n\n"
+        "## UNIT NOTES\n"
+        "- Stock price: in THOUSANDS VND (close=68.8 means 68,800 VND/share)\n"
+        "- EPS, BVPS: in full VND per share\n"
+        "- Financial statement items: in TỶ ĐỒNG (VND billion) after conversion\n"
+        "- P/E, P/B, ROE etc. from ratio() are already correctly computed by the data provider\n\n"
     )
 
     import pandas as pd
+
+    # TTM metrics — computed first, placed at top so LLM sees them before raw data
+    sections.append(_compute_ttm_metrics(sym, curr_date, fun))
 
     # Financial health scorecard — auto-detects bank / securities / generic
     try:
