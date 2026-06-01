@@ -111,20 +111,37 @@ import re as _re
 
 
 def _parse_quarter_period(series):
-    """Parse 'YYYY-Qn' period strings to Timestamps.
+    """Parse 'YYYY-Qn' period strings to their estimated publication dates.
 
-    pd.to_datetime cannot handle 'YYYY-Q1' format and silently returns NaT,
-    which causes date filters to drop ALL rows. This helper handles both
-    formats: 'YYYY-Q1' and standard ISO dates.
+    CRITICAL — avoids look-ahead bias: financial statements are published
+    AFTER the quarter ends. Using the quarter start date (Jan 1 for Q1)
+    incorrectly includes data that wasn't available at the analysis date.
+
+    Vietnamese regulatory publication deadlines:
+      Q1 (Jan–Mar): available by Apr 30  (30-day deadline for listed cos.)
+      Q2 (Apr–Jun): available by Jul 31
+      Q3 (Jul–Sep): available by Oct 31
+      Q4 (Oct–Dec): available by Feb 28 next year (annual audit required)
+
+    Example: analysis date = 2026-01-28
+      '2026-Q1' → pub date May 15, 2026  → Jan 28 < May 15 → EXCLUDED ✓
+      '2025-Q4' → pub date Feb 28, 2026  → Jan 28 < Feb 28 → EXCLUDED ✓
+      '2025-Q3' → pub date Oct 31, 2025  → Jan 28 > Oct 31 → INCLUDED ✓
     """
+    import pandas as _pd
+
+    _QUARTER_END = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+    _PUB_LAG_DAYS = {1: 30, 2: 31, 3: 31, 4: 60}  # days after quarter end
+
     def _one(s):
         m = _re.match(r"(\d{4})-Q(\d)", str(s))
         if m:
             yr, q = int(m.group(1)), int(m.group(2))
-            return _pd.Timestamp(yr, (q - 1) * 3 + 1, 1)
+            end_month, end_day = _QUARTER_END[q]
+            quarter_end = _pd.Timestamp(yr, end_month, end_day)
+            return quarter_end + _pd.DateOffset(days=_PUB_LAG_DAYS[q])
         return _pd.to_datetime(s, errors="coerce")
 
-    import pandas as _pd
     return series.apply(_one)
 
 
