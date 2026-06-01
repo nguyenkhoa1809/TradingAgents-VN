@@ -13,14 +13,33 @@ from render_report import build_html
 TICKER     = "VHM"
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
 
+# PROVIDER — change this one line to switch LLM provider
+# "claude"   → Anthropic Claude  (~$0.35/run, highest quality)
+# "deepseek" → DeepSeek          (~$0.03/run, ~10x cheaper, good quality)
+PROVIDER = "claude"
+
+_PROVIDER_PRESETS = {
+    "claude": {
+        "llm_provider":   "anthropic",
+        "deep_think_llm": "claude-sonnet-4-6",
+        "quick_think_llm":"claude-haiku-4-5-20251001",
+    },
+    "deepseek": {
+        "llm_provider":   "deepseek",
+        "deep_think_llm": "deepseek-reasoner",
+        "quick_think_llm":"deepseek-chat",
+    },
+}
+
 # ANALYST SELECTION — controls cost vs quality
-# All 4:  ~$0.35/run — full coverage
-# 2 (VN): ~$0.15/run — leaner, good for VN stocks
+# All 4:  ~$0.35/run Claude | ~$0.03/run DeepSeek
+# 2 (VN): ~$0.15/run Claude | ~$0.01/run DeepSeek
 ANALYSTS = ["market", "fundamentals", "news", "social"]  # "social" = sentiment analyst
-# ANALYSTS = ["market", "fundamentals"]                   # cheaper for VN
+# ANALYSTS = ["market", "fundamentals"]                   # cheaper option
 
 # ── Run analysis ──────────────────────────────────────────────────────────────
 config = DEFAULT_CONFIG.copy()
+config.update(_PROVIDER_PRESETS[PROVIDER])
 ta = TradingAgentsGraph(debug=True, config=config, selected_analysts=ANALYSTS)
 state, decision = ta.propagate(TICKER, TRADE_DATE)
 print(decision)
