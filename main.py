@@ -14,8 +14,14 @@ TICKER     = "VHM"
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
 
 # PROVIDER — change this one line to switch LLM provider
-# "claude"   → Anthropic Claude  (~$0.35/run, highest quality)
-# "deepseek" → DeepSeek          (~$0.03/run, ~10x cheaper, good quality)
+#
+# Preset         deep_think model      quick_think model    ~cost/run
+# ─────────────────────────────────────────────────────────────────────
+# "claude"       claude-sonnet-4-6     claude-haiku-4-5     ~$0.35
+# "claude-opus"  claude-opus-4-8       claude-haiku-4-5     ~$1.50  (best quality)
+# "deepseek"     deepseek-reasoner     deepseek-chat        ~$0.03  (10x cheaper)
+# "openai"       gpt-5.5               gpt-5.4-mini         ~$0.40
+# "openai-cheap" gpt-5.4               gpt-5.4-nano         ~$0.10
 PROVIDER = "claude"
 
 _PROVIDER_PRESETS = {
@@ -24,10 +30,25 @@ _PROVIDER_PRESETS = {
         "deep_think_llm": "claude-sonnet-4-6",
         "quick_think_llm":"claude-haiku-4-5-20251001",
     },
+    "claude-opus": {
+        "llm_provider":   "anthropic",
+        "deep_think_llm": "claude-opus-4-8",
+        "quick_think_llm":"claude-haiku-4-5-20251001",
+    },
     "deepseek": {
         "llm_provider":   "deepseek",
         "deep_think_llm": "deepseek-reasoner",
         "quick_think_llm":"deepseek-chat",
+    },
+    "openai": {
+        "llm_provider":   "openai",
+        "deep_think_llm": "gpt-5.5",
+        "quick_think_llm":"gpt-5.4-mini",
+    },
+    "openai-cheap": {
+        "llm_provider":   "openai",
+        "deep_think_llm": "gpt-5.4",
+        "quick_think_llm":"gpt-5.4-nano",
     },
 }
 
