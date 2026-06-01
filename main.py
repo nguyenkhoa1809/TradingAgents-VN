@@ -10,8 +10,8 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from render_report import build_html
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TICKER     = "VHM"
-TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
+TICKER     = "BVH"
+TRADE_DATE = "2026-01-28"#strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
 
 # PROVIDER — change this one line to switch LLM provider
 #
@@ -30,7 +30,7 @@ TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
 #
 # OpenRouter model IDs: see https://openrouter.ai/models  (format: provider/model-name)
 # Requires OPENROUTER_API_KEY in .env
-PROVIDER = "claude"
+PROVIDER = "deepseek"
 
 _PROVIDER_PRESETS = {
     "claude": {
@@ -97,11 +97,11 @@ if isinstance(trader, str) and trader.strip():
 if sections:
     out_dir = Path("reports") / TICKER
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Auto-increment version so reruns never overwrite previous reports
+    # Auto-increment version; include provider in filename for easy comparison
     v = 1
-    while (out_dir / f"{TICKER}_{TRADE_DATE}_v{v}.html").exists():
+    while (out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
         v += 1
-    out_path = out_dir / f"{TICKER}_{TRADE_DATE}_v{v}.html"
+    out_path = out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html"
     html = build_html(TICKER, TRADE_DATE, sections, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     out_path.write_text(html, encoding="utf-8")
     print(f"\nReport saved: {out_path.resolve()}")
