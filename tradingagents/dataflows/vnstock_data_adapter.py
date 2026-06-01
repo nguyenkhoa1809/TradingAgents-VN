@@ -184,8 +184,12 @@ def _filter_and_limit_periods(df, curr_date: str, n: int = 4):
     cutoff = _pd.Timestamp(curr_date)
     mask = parsed.notna() & (parsed <= cutoff)
     filtered = df[mask].copy()
+    if filtered.empty:
+        # Never fall back to unfiltered data — that would inject future periods
+        # and violate look-ahead-bias safeguards. Return empty instead.
+        return filtered
     # Data arrives newest-first; head(n) gives n most-recent periods.
-    return filtered.head(n) if not filtered.empty else df.head(n)
+    return filtered.head(n)
 
 
 def _df_to_str(df, header: str = "") -> str:
@@ -457,8 +461,6 @@ def _compute_ttm_metrics(sym: str, curr_date: str, fun) -> str:
     them from raw quarterly figures.
     """
     try:
-        from vnstock_data import Fundamental  # type: ignore
-
         # ── Income statement: sum 4 quarters for TTM ──────────────────────
         is_df = fun.equity(sym).income_statement(period="quarter")
         is_df = _filter_and_limit_periods(is_df, curr_date, n=4)
@@ -548,11 +550,12 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     fun = Fundamental()
 
     sections.append(
-        "## UNIT NOTES\n"
-        "- Stock price: in THOUSANDS VND (close=68.8 means 68,800 VND/share)\n"
-        "- EPS, BVPS: in full VND per share\n"
-        "- Financial statement items: in TỶ ĐỒNG (VND billion) after conversion\n"
-        "- P/E, P/B, ROE etc. from ratio() are already correctly computed by the data provider\n\n"
+        "## UNIT NOTES — READ CAREFULLY BEFORE INTERPRETING ANY NUMBER\n"
+        "- Stock price (OHLCV): THOUSANDS of VND. close=68.8 → 68,800 VND/share.\n"
+        "- EPS, BVPS (from ratio section): full VND per share. EPS=4,184 → 4,184 VND/share (NOT 4,184 tỷ).\n"
+        "- P/E, P/B (from ratio section): UNITLESS RATIOS. pe=6.61 means price is 6.61× earnings.\n"
+        "- Balance sheet / Income statement / Cash flow: TỶ ĐỒNG (VND billion). 869,974 → 869,974 tỷ.\n"
+        "- TTM metrics below are pre-computed — use them directly, do NOT recompute from raw quarterly data.\n\n"
     )
 
     import pandas as pd
@@ -564,13 +567,15 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     try:
         from vnstock_data.ui.fundamental import Fundamental as _FunUI  # type: ignore
         df_health = _FunUI(source="mas").equity(sym).financial_health(
-            scorecard="auto", lang="vi", limit=4
+            scorecard="auto", lang="vi", limit=8  # fetch extra so filter has room
         )
         if df_health is not None and not df_health.empty:
-            sections.append(
-                "## Financial Health Scorecard (industry-adjusted, VAS) — 4 most recent periods\n"
-                + df_health.tail(4).to_csv(index=False) + "\n"
-            )
+            df_health = _filter_and_limit_periods(df_health, curr_date, n=4)
+            if not df_health.empty:
+                sections.append(
+                    "## Financial Health Scorecard (industry-adjusted, VAS) — 4 most recent periods\n"
+                    + df_health.to_csv(index=False) + "\n"
+                )
     except Exception as exc:
         sections.append(f"## Financial Health Scorecard\nNot available: {exc}\n")
 
@@ -772,23 +777,39 @@ def get_news(
     sym = ticker.upper()
 
     # Attempt vnstock_news (Crawler API) — try financial sites in priority order
+    # NOTE: RSS/crawler fetches CURRENT news only, not historical archives.
+    # For historical analysis dates, treat news as approximate context only.
     try:
         from vnstock_news import Crawler  # type: ignore
         articles = _crawl_vn_news(limit_per_feed=20)
-        relevant = [
-            a for a in articles
-            if sym in str(a.get("title", "")).upper()
-        ]
+
+        # Best-effort date filter: keep articles with published date ≤ end_date
+        end_dt_obj = datetime.strptime(end_date, "%Y-%m-%d")
+        def _article_date(a) -> Optional[datetime]:
+            raw = a.get("published") or a.get("date") or ""
+            try:
+                return datetime.fromisoformat(str(raw)[:19])
+            except Exception:
+                return None
+
+        dated   = [a for a in articles if _article_date(a) is not None and _article_date(a) <= end_dt_obj]
+        undated = [a for a in articles if _article_date(a) is None]
+        articles = dated + undated  # dated+filtered first, undated appended as fallback
+
+        relevant = [a for a in articles if sym in str(a.get("title", "")).upper()]
         if not relevant:
             relevant = articles[:10]
         if relevant:
             lines = [
-                f"[{a.get('published', '')}] {a.get('title', 'No title')}"
+                f"[{a.get('published', 'date unknown')}] {a.get('title', 'No title')}"
                 for a in relevant[:15]
             ]
+            note = ("⚠ News source provides current articles only; "
+                    f"historical filtering applied where publication date available.\n")
             header = (
-                f"# News for {sym} from {start_date} to {end_date}\n"
-                f"# Source: vnstock_news (Crawler — {len(relevant)} articles)\n\n"
+                f"# News for {sym} (target window: {start_date} to {end_date})\n"
+                f"# Source: vnstock_news Crawler ({len(relevant)} articles)\n"
+                f"# {note}\n"
             )
             return header + "\n".join(lines)
     except ImportError:
