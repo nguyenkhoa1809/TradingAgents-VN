@@ -817,7 +817,18 @@ def get_news(
     except Exception as exc:
         return f"# News for {sym}\nvnstock_news error: {exc}\n"
 
-    return f"# News for {sym}\nvnstock_news not available — falling back to yfinance.\n"
+    # CRITICAL: Do NOT fall back to yfinance for VN tickers.
+    # Plain ticker "MBB" on yfinance resolves to iShares MBS ETF (US), not
+    # Military Bank Vietnam. "VNM" resolves to VanEck Vietnam ETF, etc.
+    # Return a structured placeholder so the LLM knows news is unavailable
+    # but does NOT fabricate content from wrong-market sources.
+    return (
+        f"# News for {sym} (Vietnamese equity, HOSE/HNX listed)\n"
+        f"# vnstock_news data unavailable for this ticker.\n"
+        f"# WARNING: Do NOT use yfinance/Yahoo Finance data for ticker '{sym}' —\n"
+        f"#   '{sym}' on US markets is a DIFFERENT security (e.g. MBB = iShares MBS ETF).\n"
+        f"# Rely on fundamental and technical analysis instead.\n"
+    )
 
 
 def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> str:

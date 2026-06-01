@@ -30,6 +30,14 @@ LANGUAGE NOTE: Most company-specific disclosures are in Vietnamese.
 If news_block is sparse, note this gap and rely more on technical and fundamental analysis.
 Flag these VN-specific risk keywords if present: "ket room ngoai" (foreign room full),
 "giai chap" (margin call), "thoai von nha nuoc" (government divestment), "kiem toan" (audit concern).
+
+⚠ TICKER IDENTITY WARNING — Vietnamese 3-letter tickers share codes with US securities:
+  MBB = Ngân hàng Quân Đội (Military Bank), HOSE — NOT iShares MBS ETF (US)
+  VNM = Vinamilk, HOSE                       — NOT VanEck Vietnam ETF (US)
+  HPG = Hòa Phát Group, HOSE                 — NOT any US ticker
+  TCB = Techcombank, HOSE                    — NOT any US ticker
+If any tool returns news about US ETFs or non-Vietnamese companies for these tickers,
+DISCARD that data entirely — it is the wrong security. Report news as unavailable instead.
 """
 
 
