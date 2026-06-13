@@ -48,6 +48,7 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .symbol_utils import NoMarketDataError
 
 # vnstock_data adapter — imported lazily-safe: the module always loads even
 # when vnstock_data is not installed; individual functions raise
