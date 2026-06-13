@@ -632,11 +632,11 @@ def get_balance_sheet(
         return f"# Balance sheet for {sym}\nNot available: {exc}\n"
 
     if df is not None and not df.empty:
-        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=4)
+        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=8)
         df = _financial_to_billion(df)
 
     header = (
-        f"# Balance sheet for {sym} ({freq}) — 4 most recent periods\n"
+        f"# Balance sheet for {sym} ({freq}) — 8 most recent periods\n"
         f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
         f"# Source: vnstock_data\n\n"
     )
@@ -674,11 +674,11 @@ def get_cashflow(
         return f"# Cash flow for {sym}\nNot available: {exc}\n"
 
     if df is not None and not df.empty:
-        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=4)
+        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=8)
         df = _financial_to_billion(df)
 
     header = (
-        f"# Cash flow for {sym} ({freq}) — 4 most recent periods\n"
+        f"# Cash flow for {sym} ({freq}) — 8 most recent periods\n"
         f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
         f"# Source: vnstock_data\n\n"
     )
@@ -716,11 +716,11 @@ def get_income_statement(
         return f"# Income statement for {sym}\nNot available: {exc}\n"
 
     if df is not None and not df.empty:
-        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=4)
+        df = _filter_and_limit_periods(df, curr_date or "2099-12-31", n=8)
         df = _financial_to_billion(df)
 
     header = (
-        f"# Income statement for {sym} ({freq}) — 4 most recent periods\n"
+        f"# Income statement for {sym} ({freq}) — 8 most recent periods\n"
         f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
         f"# Source: vnstock_data\n\n"
     )

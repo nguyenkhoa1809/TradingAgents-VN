@@ -71,7 +71,7 @@ for i, ticker in enumerate(TICKERS, 1):
             sections["trader_investment_plan"] = trader
 
         if sections:
-            out_dir = Path("reports") / ticker
+            out_dir = Path(__file__).parent / "reports" / ticker
             out_dir.mkdir(parents=True, exist_ok=True)
             v = 1
             while (out_dir / f"{ticker}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
@@ -102,4 +102,4 @@ for r in results:
     mark = "✓" if r["ok"] else "✗"
     print(f"  {mark} {r['ticker']:<8}  {r['signal']}")
 print(f"{'='*65}\n")
-print(f"Reports saved in: reports/")
+print(f"Reports saved in: {Path(__file__).parent / 'reports'}")

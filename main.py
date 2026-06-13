@@ -34,7 +34,7 @@ def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
 # ── Config ────────────────────────────────────────────────────────────────────
 # Single ticker:  TICKERS = ["VCB"]
 # Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
-TICKERS    = ["FRT"]
+TICKERS    = ["VHM"]
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 
 
@@ -150,7 +150,7 @@ for TICKER in TICKERS:
         sections["trader_investment_plan"] = trader
 
     if sections:
-        out_dir = Path("reports") / TICKER
+        out_dir = Path(__file__).parent / "reports" / TICKER
         out_dir.mkdir(parents=True, exist_ok=True)
         v = 1
         while (out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
