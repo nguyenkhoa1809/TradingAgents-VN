@@ -403,6 +403,39 @@ body::before {
   gap: 6px;
 }
 
+.header-models {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.model-chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-muted);
+}
+
+.model-chip .chip-label {
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.cost-chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(34,197,94,0.3);
+  background: rgba(34,197,94,0.08);
+  color: #4ade80;
+  font-weight: 600;
+}
+
 .report-title {
   font-size: clamp(32px, 5vw, 52px);
   font-weight: 800;
@@ -907,7 +940,8 @@ document.querySelectorAll('.stat-value[data-target]').forEach(el => {
 """
 
 
-def build_html(ticker: str, analysis_date: str, sections: dict[str, str], generated_at: str) -> str:
+def build_html(ticker: str, analysis_date: str, sections: dict[str, str], generated_at: str,
+               model_info: dict | None = None, cost_str: str | None = None) -> str:
     """Build the complete HTML report string."""
 
     # Count sections present
@@ -1003,6 +1037,19 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
 </div>
 """
 
+    # ── Model info row ────────────────────────────────────────────
+    if model_info:
+        chips = []
+        if model_info.get("deep_think_llm"):
+            chips.append(f'<span class="model-chip"><span class="chip-label">Deep:</span>{model_info["deep_think_llm"]}</span>')
+        if model_info.get("quick_think_llm") and model_info.get("quick_think_llm") != model_info.get("deep_think_llm"):
+            chips.append(f'<span class="model-chip"><span class="chip-label">Quick:</span>{model_info["quick_think_llm"]}</span>')
+        if cost_str:
+            chips.append(f'<span class="cost-chip">💰 {cost_str}</span>')
+        model_info_html = f'<div class="header-models">{"".join(chips)}</div>'
+    else:
+        model_info_html = ""
+
     # ── Stats bar ─────────────────────────────────────────────────
     stats_bar = f"""
 <div class="stats-bar">
@@ -1044,6 +1091,7 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
       <span class="header-badge">TradingAgents AI</span>
       <span class="header-date">🕐 Generated {generated_at}</span>
     </div>
+    {model_info_html}
     <h1 class="report-title">
       <span class="ticker-highlight">{ticker}</span> Investment Report
     </h1>

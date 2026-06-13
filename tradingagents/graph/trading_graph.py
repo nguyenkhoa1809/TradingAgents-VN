@@ -58,6 +58,8 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
+        deep_callbacks: Optional[List] = None,
+        quick_callbacks: Optional[List] = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -65,7 +67,9 @@ class TradingAgentsGraph:
             selected_analysts: List of analyst types to include
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
-            callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            callbacks: Callback handlers applied to both LLMs
+            deep_callbacks: Callback handlers applied only to the deep-think LLM
+            quick_callbacks: Callback handlers applied only to the quick-think LLM
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
@@ -81,21 +85,23 @@ class TradingAgentsGraph:
         # Initialize LLMs with provider-specific thinking configuration
         llm_kwargs = self._get_provider_kwargs()
 
-        # Add callbacks to kwargs if provided (passed to LLM constructor)
-        if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
+        deep_cb = (deep_callbacks or []) + self.callbacks
+        quick_cb = (quick_callbacks or []) + self.callbacks
+
+        deep_kwargs = {**llm_kwargs, **({"callbacks": deep_cb} if deep_cb else {})}
+        quick_kwargs = {**llm_kwargs, **({"callbacks": quick_cb} if quick_cb else {})}
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["deep_think_llm"],
             base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            **deep_kwargs,
         )
         quick_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["quick_think_llm"],
             base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            **quick_kwargs,
         )
 
         self.deep_thinking_llm = deep_client.get_llm()

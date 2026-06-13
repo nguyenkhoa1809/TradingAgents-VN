@@ -4,15 +4,37 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from cli.stats_handler import StatsCallbackHandler
 from render_report import build_html
+
+# Pricing per million tokens (input, output) — update as providers change rates
+_PRICING_PER_M: dict[str, tuple[float, float]] = {
+    "deepseek-v4-flash":        (0.14,  0.28),
+    "deepseek-v4-pro":          (1.74,  3.48),
+    "deepseek-reasoner":        (0.55,  2.19),
+    "deepseek-chat":            (0.27,  1.10),
+    "claude-sonnet-4-6":        (3.00, 15.00),
+    "claude-opus-4-8":         (15.00, 75.00),
+    "claude-haiku-4-5-20251001":(0.80,  4.00),
+    "gpt-5.5":                  (2.50, 10.00),
+    "gpt-5.4":                  (1.25,  5.00),
+    "gpt-5.4-mini":             (0.15,  0.60),
+    "gpt-5.4-nano":             (0.075, 0.30),
+}
+
+def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    rate_in, rate_out = _PRICING_PER_M.get(model, (0.0, 0.0))
+    return (tokens_in * rate_in + tokens_out * rate_out) / 1_000_000
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Single ticker:  TICKERS = ["VCB"]
 # Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
-TICKERS    = ["STB", "TCB", "TCX", "VCB", "VCI", "VHM", "VIC", "VNM", "VPB"]
+TICKERS    = ["FRT"]
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 
 
@@ -22,7 +44,8 @@ TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 # ───────────────────────────────────────────────────────────────────────────────────────────
 # "claude"          claude-sonnet-4-6                 claude-haiku-4-5              ~$0.35
 # "claude-opus"     claude-opus-4-8                   claude-haiku-4-5              ~$1.50
-# "deepseek"        deepseek-reasoner                 deepseek-chat                 ~$0.03
+# "deepseek"        deepseek-v4-flash                 deepseek-v4-flash             ~$0.03
+# "deepseek-pro"    deepseek-v4-pro                   deepseek-v4-flash             ~$0.35
 # "openai"          gpt-5.5                           gpt-5.4-mini                  ~$0.40
 # "openai-cheap"    gpt-5.4                           gpt-5.4-nano                  ~$0.10
 # "openrouter"      google/gemini-2.5-pro             google/gemini-2.5-flash       ~$0.05
@@ -31,7 +54,7 @@ TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 #
 # OpenRouter model IDs: see https://openrouter.ai/models  (format: provider/model-name)
 # Requires OPENROUTER_API_KEY in .env
-PROVIDER = "deepseek"
+PROVIDER = "deepseek-pro"
 
 _PROVIDER_PRESETS = {
     "claude": {
@@ -46,8 +69,13 @@ _PROVIDER_PRESETS = {
     },
     "deepseek": {
         "llm_provider":   "deepseek",
-        "deep_think_llm": "deepseek-reasoner",
-        "quick_think_llm":"deepseek-chat",
+        "deep_think_llm": "deepseek-v4-flash",
+        "quick_think_llm":"deepseek-v4-flash",
+    },
+    "deepseek-pro": {
+        "llm_provider":   "deepseek",
+        "deep_think_llm": "deepseek-v4-pro",
+        "quick_think_llm":"deepseek-v4-flash",
     },
     "openai": {
         "llm_provider":   "openai",
@@ -86,11 +114,34 @@ SECTION_KEYS = [
 config = DEFAULT_CONFIG.copy()
 config.update(_PROVIDER_PRESETS[PROVIDER])
 
+_model_info = _PROVIDER_PRESETS[PROVIDER]
+
 for TICKER in TICKERS:
     print(f"\n{'='*55}\n  Analyzing {TICKER} ({TICKERS.index(TICKER)+1}/{len(TICKERS)})\n{'='*55}")
-    ta = TradingAgentsGraph(debug=True, config=config, selected_analysts=ANALYSTS)
+    deep_stats  = StatsCallbackHandler()
+    quick_stats = StatsCallbackHandler()
+    ta = TradingAgentsGraph(
+        debug=True, config=config, selected_analysts=ANALYSTS,
+        deep_callbacks=[deep_stats], quick_callbacks=[quick_stats],
+    )
     state, decision = ta.propagate(TICKER, TRADE_DATE)
     print(decision)
+
+    # ── Cost summary ───────────────────────────────────────────────────────────
+    ds = deep_stats.get_stats()
+    qs = quick_stats.get_stats()
+    deep_cost  = _calc_cost(_model_info["deep_think_llm"],  ds["tokens_in"], ds["tokens_out"])
+    quick_cost = _calc_cost(_model_info["quick_think_llm"], qs["tokens_in"], qs["tokens_out"])
+    total_cost  = deep_cost + quick_cost
+    total_tok_in  = ds["tokens_in"]  + qs["tokens_in"]
+    total_tok_out = ds["tokens_out"] + qs["tokens_out"]
+    cost_str = (
+        f"${total_cost:.4f} · {total_tok_in+total_tok_out:,} tokens "
+        f"({total_tok_in:,}in / {total_tok_out:,}out)"
+    )
+    print(f"\nTokens — deep: {ds['tokens_in']:,}in / {ds['tokens_out']:,}out  "
+          f"| quick: {qs['tokens_in']:,}in / {qs['tokens_out']:,}out")
+    print(f"Cost   — {cost_str}")
 
     # ── Save HTML report ───────────────────────────────────────────────────────
     sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
@@ -105,7 +156,12 @@ for TICKER in TICKERS:
         while (out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
             v += 1
         out_path = out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html"
-        html = build_html(TICKER, TRADE_DATE, sections, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        html = build_html(
+            TICKER, TRADE_DATE, sections,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            model_info=_model_info,
+            cost_str=cost_str,
+        )
         out_path.write_text(html, encoding="utf-8")
         print(f"\nReport saved: {out_path.resolve()}")
         webbrowser.open(out_path.resolve().as_uri())
