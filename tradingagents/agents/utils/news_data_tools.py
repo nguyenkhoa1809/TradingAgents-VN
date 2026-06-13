@@ -1,6 +1,9 @@
 from langchain_core.tools import tool
 from typing import Annotated, Optional
+from pathlib import Path
 from tradingagents.dataflows.interface import route_to_vendor
+
+_MW_DB = Path(__file__).parent.parent.parent.parent.parent / "marketwire" / "data" / "marketwire.db"
 
 @tool
 def get_news(
@@ -55,3 +58,69 @@ def get_insider_transactions(
         str: A report of insider transaction data
     """
     return route_to_vendor("get_insider_transactions", ticker)
+
+
+@tool
+def get_marketwire_news(
+    ticker: Annotated[str, "VN ticker symbol, e.g. VCB, HPG, ACB"],
+    days: Annotated[int, "Days to look back (default 3)"] = 3,
+) -> str:
+    """
+    Retrieve recent news from local MarketWire database for a Vietnamese ticker.
+    Covers both RSS macro/market news (with LLM importance scores) and sell-side
+    broker notes ingested from WhatsApp/Outlook.  Returns up to 15 most relevant
+    articles sorted by importance then recency.  Use this BEFORE get_news for VN
+    tickers — it is faster, offline, and includes internal broker analysis.
+    """
+    import sqlite3, json
+    from datetime import datetime, timezone, timedelta
+
+    if not _MW_DB.exists():
+        return f"MarketWire DB not found at {_MW_DB}. Run MarketWire pipeline first."
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    ticker_upper = ticker.strip().upper()
+
+    try:
+        con = sqlite3.connect(str(_MW_DB), timeout=10)
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT a.title, a.summary_vi, a.thesis, a.importance,
+                   a.published, a.url, a.tickers,
+                   s.name AS source_name, s.expert_name
+            FROM articles a JOIN sources s ON a.source_id = s.id
+            WHERE a.processed = 1
+              AND a.published >= ?
+              AND (
+                    a.tickers LIKE ?
+                 OR s.name = 'Sell-side Notes'
+              )
+            ORDER BY COALESCE(a.importance, 0) DESC, a.published DESC
+            LIMIT 15
+            """,
+            (cutoff, f'%"{ticker_upper}"%'),
+        ).fetchall()
+        con.close()
+    except Exception as e:
+        return f"MarketWire query error: {e}"
+
+    if not rows:
+        return f"No MarketWire articles found for {ticker_upper} in the last {days} days."
+
+    lines = [f"=== MarketWire: {ticker_upper} (last {days} days, {len(rows)} articles) ===\n"]
+    for r in rows:
+        tickers = json.loads(r["tickers"] or "[]")
+        if ticker_upper not in tickers and r["source_name"] != "Sell-side Notes":
+            continue
+        imp = f"*{r['importance']}" if r["importance"] else ""
+        pub = r["published"][:16].replace("T", " ")
+        expert = f" [{r['expert_name']}]" if r["expert_name"] else ""
+        lines.append(f"[{pub}] {imp} {r['source_name']}{expert}")
+        lines.append(f"  {r['title']}")
+        if r["summary_vi"]:
+            lines.append(f"  → {r['summary_vi'][:300]}")
+        if r["thesis"]:
+            lines.append(f"  Thesis: {r['thesis'][:200]}")
+        lines.append("")
+    return "\n".join(lines)

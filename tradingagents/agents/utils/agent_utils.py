@@ -56,6 +56,17 @@ def _clean_identity_value(value: Any) -> Optional[str]:
     return cleaned
 
 
+@functools.lru_cache(maxsize=1)
+def _get_vn_listing() -> dict:
+    """Return {symbol -> organ_name} for all VN equities. Cached once per process."""
+    try:
+        from vnstock_data import Listing
+        df = Listing(source="kbs").all_symbols(show=False)
+        return dict(zip(df["symbol"], df["organ_name"]))
+    except Exception:
+        return {}
+
+
 @functools.lru_cache(maxsize=256)
 def resolve_instrument_identity(ticker: str) -> dict:
     """Resolve deterministic identity metadata (company name, sector, …) for a ticker.
@@ -66,18 +77,32 @@ def resolve_instrument_identity(ticker: str) -> dict:
     the price action to a narrative and invent an identity that then cascaded
     through every downstream agent.
 
-    Best-effort by design: if yfinance is unavailable, rate-limited, or doesn't
-    recognise the ticker, we return ``{}`` and the caller falls back to
-    ticker-only context rather than failing before analysis starts. Cached so
-    the lookup happens at most once per ticker per process.
+    For Vietnamese tickers (2-3 uppercase letters, HOSE/HNX equities), yfinance
+    is skipped entirely — it returns wrong foreign companies sharing the same
+    ticker symbol (e.g. MWG→Multi Ways Holdings SG, HDB→HDFC Bank IN,
+    MBB→iShares MBS ETF US). Instead we look up the name from vnstock_data.
+
+    Best-effort by design: returns ``{}`` on any failure so the caller falls
+    back to ticker-only context. Cached so the lookup runs at most once per
+    ticker per process.
     """
+    from tradingagents.dataflows.market_router import is_vn_ticker
+
+    if is_vn_ticker(ticker):
+        listing = _get_vn_listing()
+        name = listing.get(ticker.upper())
+        identity: dict[str, str] = {"exchange": "HOSE", "quote_type": "EQUITY"}
+        if name:
+            identity["company_name"] = name
+        return identity
+
     try:
         info = yf.Ticker(ticker.upper()).info or {}
     except Exception as exc:  # noqa: BLE001 — fail open, never block the run
         logger.debug("Could not resolve instrument identity for %s: %s", ticker, exc)
         return {}
 
-    identity: dict[str, str] = {}
+    identity = {}
     company_name = _clean_identity_value(info.get("longName")) or _clean_identity_value(
         info.get("shortName")
     )

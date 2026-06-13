@@ -5,6 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_news,
 )
+from tradingagents.agents.utils.news_data_tools import get_marketwire_news
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market_router import is_vn_ticker
 
@@ -49,10 +50,9 @@ def create_news_analyst(llm):
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
 
-        tools = [
-            get_news,
-            get_global_news,
-        ]
+        tools = [get_news, get_global_news]
+        if is_vn_ticker(ticker):
+            tools = [get_marketwire_news, get_news, get_global_news]
 
         vn_context = _VN_NEWS_CONTEXT if is_vn_ticker(ticker) else ""
 

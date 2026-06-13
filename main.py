@@ -10,11 +10,12 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from render_report import build_html
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TICKER     = "BVH"
-TRADE_DATE = "2026-01-28"#strftime("%Y-%m-%d")  # or fixed: "2024-05-10"
+# Single ticker:  TICKERS = ["VCB"]
+# Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
+TICKERS    = ["STB", "TCB", "TCX", "VCB", "VCI", "VHM", "VIC", "VNM", "VPB"]
+TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 
-# PROVIDER — change this one line to switch LLM provider
-#
+
 # PROVIDER — change this one line to switch LLM provider
 #
 # Preset            deep_think model                  quick_think model             ~cost/run
@@ -77,35 +78,37 @@ ANALYSTS = ["market", "fundamentals", "news", "social"]  # "social" = sentiment 
 # ANALYSTS = ["market", "fundamentals"]                   # cheaper option
 
 # ── Run analysis ──────────────────────────────────────────────────────────────
-config = DEFAULT_CONFIG.copy()
-config.update(_PROVIDER_PRESETS[PROVIDER])
-ta = TradingAgentsGraph(debug=True, config=config, selected_analysts=ANALYSTS)
-state, decision = ta.propagate(TICKER, TRADE_DATE)
-print(decision)
-
-# ── Save HTML report to reports/{TICKER}/ ─────────────────────────────────────
 SECTION_KEYS = [
     "market_report", "sentiment_report", "news_report",
     "fundamentals_report", "investment_plan", "final_trade_decision",
 ]
 
-sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
-trader = state.get("trader_investment_decision", "")
-if isinstance(trader, str) and trader.strip():
-    sections["trader_investment_plan"] = trader
+config = DEFAULT_CONFIG.copy()
+config.update(_PROVIDER_PRESETS[PROVIDER])
 
-if sections:
-    out_dir = Path("reports") / TICKER
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # Auto-increment version; include provider in filename for easy comparison
-    v = 1
-    while (out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
-        v += 1
-    out_path = out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html"
-    html = build_html(TICKER, TRADE_DATE, sections, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    out_path.write_text(html, encoding="utf-8")
-    print(f"\nReport saved: {out_path.resolve()}")
-    webbrowser.open(out_path.resolve().as_uri())
+for TICKER in TICKERS:
+    print(f"\n{'='*55}\n  Analyzing {TICKER} ({TICKERS.index(TICKER)+1}/{len(TICKERS)})\n{'='*55}")
+    ta = TradingAgentsGraph(debug=True, config=config, selected_analysts=ANALYSTS)
+    state, decision = ta.propagate(TICKER, TRADE_DATE)
+    print(decision)
+
+    # ── Save HTML report ───────────────────────────────────────────────────────
+    sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
+    trader = state.get("trader_investment_decision", "")
+    if isinstance(trader, str) and trader.strip():
+        sections["trader_investment_plan"] = trader
+
+    if sections:
+        out_dir = Path("reports") / TICKER
+        out_dir.mkdir(parents=True, exist_ok=True)
+        v = 1
+        while (out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
+            v += 1
+        out_path = out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html"
+        html = build_html(TICKER, TRADE_DATE, sections, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        out_path.write_text(html, encoding="utf-8")
+        print(f"\nReport saved: {out_path.resolve()}")
+        webbrowser.open(out_path.resolve().as_uri())
 
 # Memorize mistakes and reflect
 # ta.reflect_and_remember(1000)  # pass realized P&L in VND/USD
