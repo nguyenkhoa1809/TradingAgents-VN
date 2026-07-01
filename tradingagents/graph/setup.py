@@ -5,6 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
+from tradingagents.agents.fact_check_gate import create_fact_check_gate
 from tradingagents.agents.utils.agent_states import AgentState
 
 from .analyst_execution import build_analyst_execution_plan
@@ -21,10 +22,14 @@ class GraphSetup:
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
         analyst_concurrency_limit: int = 1,
+        analyst_thinking_llm: Any = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
+        # analyst_thinking_llm is the same model as quick but with low temperature
+        # (Phase I determinism).  Falls back to quick_thinking_llm when not set.
+        self.analyst_thinking_llm = analyst_thinking_llm or quick_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
         self.analyst_concurrency_limit = analyst_concurrency_limit
@@ -47,16 +52,16 @@ class GraphSetup:
         )
 
         analyst_factories = {
-            "market": lambda: create_market_analyst(self.quick_thinking_llm),
-            "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
-            "news": lambda: create_news_analyst(self.quick_thinking_llm),
-            "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+            "market": lambda: create_market_analyst(self.analyst_thinking_llm),
+            "social": lambda: create_sentiment_analyst(self.analyst_thinking_llm),
+            "news": lambda: create_news_analyst(self.analyst_thinking_llm),
+            "fundamentals": lambda: create_fundamentals_analyst(self.analyst_thinking_llm),
         }
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
-        research_manager_node = create_research_manager(self.deep_thinking_llm)
+        research_manager_node = create_research_manager(self.quick_thinking_llm)
         trader_node = create_trader(self.quick_thinking_llm)
 
         # Create risk analysis nodes
@@ -73,6 +78,10 @@ class GraphSetup:
             workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
             workflow.add_node(spec.clear_node, create_msg_delete())
             workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
+
+        # C3 Fact-check gate — runs after all analysts, before Bull Researcher
+        fact_check_gate_node = create_fact_check_gate(self.quick_thinking_llm)
+        workflow.add_node("Fact Check Gate", fact_check_gate_node)
 
         # Add other nodes
         workflow.add_node("Bull Researcher", bull_researcher_node)
@@ -102,11 +111,14 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
+            # Connect to next analyst, or to Fact Check Gate if this is the last analyst
             if i < len(plan.specs) - 1:
                 workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                workflow.add_edge(current_clear, "Fact Check Gate")
+
+        # Gate → Phase II
+        workflow.add_edge("Fact Check Gate", "Bull Researcher")
 
         # Add remaining edges
         workflow.add_conditional_edges(

@@ -143,20 +143,27 @@ Vietnamese retail investors primarily discuss stocks on:
 - F319 (f319.com) — large retail trader community
 - Facebook groups and Zalo (private, not crawlable)
 
-Since social media data is unavailable, use PRICE-ACTION as your sentiment proxy:
+The news_block already contains REAL, ticker-specific Vietnamese data collected for you:
+  1. **Price-Band Sentiment** — ceiling/floor hit counts + volume spikes (crowd psychology)
+  2. **Dòng tiền khối ngoại (Foreign flow)** — NN net buy/sell in tỷ đồng + ownership trend
+  3. **Tin tức theo mã** — recent company-specific headlines from vnstock_data
+  4. CafeF / Google News headlines (supplementary)
 
-BULLISH SIGNALS: consecutive ceiling hits (gia tran, +7% days), volume surge >2× average,
-  foreign room (ty le sohuu nuoc ngoai) decreasing (foreigners buying)
-BEARISH SIGNALS: consecutive floor hits (gia san, -7% days), volume spike with price down
-  (margin call / giai chap), foreign room increasing (foreigners selling)
-NEUTRAL: price ranging within band, average volume, no limit hits
+PRIORITIZE these signals (most → least reliable for VN):
+  • **Foreign flow (NN ròng)** is the single strongest VN sentiment signal. Net buying =
+    bullish (smart money accumulating); net selling = bearish (capital outflow). Weight it heavily.
+  • **Price-band behavior**: consecutive ceiling hits (gia tran) = bullish retail rush;
+    consecutive floor hits (gia san) = panic / margin-call cascade; volume spikes = elevated activity.
+  • **Company news**: read titles for catalysts/risks — corporate actions, earnings, divestment,
+    insider/foreign transactions, regulatory news.
 
-RISK FLAGS to watch in news_block: "ket room ngoai" (foreign room full/exhausted),
-  "giai chap" (forced margin selling), "thoai von nha nuoc" (government divestment overhang),
-  "kiem toan co y kien" (qualified audit opinion)
+RISK FLAGS in the news/headlines: "ket room ngoai" (foreign room exhausted),
+  "giai chap" (forced margin selling), "thoai von nha nuoc" (state divestment overhang),
+  "kiem toan co y kien" (qualified audit opinion), "ban giai chap" (broker liquidation).
 
-Weight news_block heavily. Discount the empty StockTwits/Reddit sections — they carry
-no information for Vietnamese equities.
+Build your overall_band/score primarily from FOREIGN FLOW + PRICE-BAND (quantitative, reliable),
+then refine with company-news catalysts. Ignore the empty StockTwits/Reddit sections entirely.
+Cite specific numbers (NN ròng X tỷ, Y ceiling hits) as evidence — do NOT be vague.
 """
 
 

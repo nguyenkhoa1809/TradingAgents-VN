@@ -4,6 +4,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_global_news,
     get_language_instruction,
     get_news,
+    extract_analyst_rating,
 )
 from tradingagents.agents.utils.news_data_tools import get_marketwire_news
 from tradingagents.dataflows.config import get_config
@@ -56,9 +57,26 @@ def create_news_analyst(llm):
 
         vn_context = _VN_NEWS_CONTEXT if is_vn_ticker(ticker) else ""
 
+        # News-digest formatting: tag each item with a sentiment marker the
+        # renderer turns into a colored badge, and keep figures explicit.
+        digest_format = (
+            "\n\nNEWS DIGEST FORMAT — structure the report as follows:\n"
+            "1. Start with a '## 📰 News Digest' section listing the 4–7 most "
+            "market-relevant items. Begin EACH item with a sentiment marker on its "
+            "own line, chosen from EXACTLY these tags:\n"
+            "   [TÍCH CỰC]  — bullish / positive for the stock\n"
+            "   [TRUNG LẬP] — neutral / mixed impact\n"
+            "   [TIÊU CỰC]  — bearish / negative for the stock\n"
+            "   Format: '- [TÍCH CỰC] **<headline>** — <1–2 sentence impact>. <source/date>'\n"
+            "2. Always quote concrete figures explicitly (%, tỷ đồng, lần, giá) — "
+            "do NOT round away the numbers; the digest highlights them automatically.\n"
+            "3. After the digest, add a '## Phân Tích Chi Tiết' section with deeper context.\n"
+            "4. End with a Markdown summary table of key points.\n"
+        )
+
         system_message = (
             f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, and get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            + digest_format
             + vn_context
             + get_language_instruction()
         )
@@ -89,13 +107,16 @@ def create_news_analyst(llm):
         result = chain.invoke(state["messages"])
 
         report = ""
+        news_rating = None
 
         if len(result.tool_calls) == 0:
             report = result.content
+            news_rating = extract_analyst_rating(llm, report)
 
         return {
             "messages": [result],
             "news_report": report,
+            "news_analyst_rating": news_rating,
         }
 
     return news_analyst_node

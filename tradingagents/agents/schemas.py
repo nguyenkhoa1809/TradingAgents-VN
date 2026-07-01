@@ -75,11 +75,23 @@ class ResearchPlan(BaseModel):
             "the side with the stronger arguments."
         ),
     )
+    evidence_assessment: str = Field(
+        description=(
+            "Đánh giá bằng chứng ĐỐI XỨNG cho cả hai phía trước khi kết luận (B3). "
+            "Với MỖI bên (bull và bear), liệt kê rõ: data point nào là ĐÃ XÁC NHẬN "
+            "(confirmed — số liệu lịch sử/đã công bố) vs DỰ BÁO (forecast — kỳ vọng "
+            "tương lai chưa chứng minh). Áp dụng CÙNG MỘT tiêu chuẩn bằng chứng cho "
+            "cả hai — không được bắt một bên 'phải chứng minh' trong khi bên kia "
+            "cũng chỉ đang dự báo. Số liệu phải khớp block 'SỐ LIỆU TÀI CHÍNH CHÍNH THỐNG'."
+        ),
+    )
     rationale: str = Field(
         description=(
             "Conversational summary of the key points from both sides of the "
             "debate, ending with which arguments led to the recommendation. "
-            "Speak naturally, as if to a teammate."
+            "Speak naturally, as if to a teammate. Chỉ bổ sung thông tin/lập luận "
+            "MỚI — không lặp lại nguyên văn các luận điểm đã nêu ở phần phân tích "
+            "trước (B4)."
         ),
     )
     strategic_actions: str = Field(
@@ -94,6 +106,8 @@ def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
     return "\n".join([
         f"**Recommendation**: {plan.recommendation.value}",
+        "",
+        f"**Đánh Giá Bằng Chứng (confirmed vs forecast)**: {plan.evidence_assessment}",
         "",
         f"**Rationale**: {plan.rationale}",
         "",
@@ -180,7 +194,51 @@ class PortfolioDecision(BaseModel):
     rating: PortfolioRating = Field(
         description=(
             "The final position rating. Exactly one of Buy / Overweight / Hold / "
-            "Underweight / Sell, picked based on the analysts' debate."
+            "Underweight / Sell. Rating PHẢI suy ra TỪ Expected Value + mức tin cậy "
+            "(KHÔNG phải từ 'bên nào thắng tranh luận'). Nếu rating ngược dấu với EV "
+            "thì phần expected_value phải giải thích rõ lý do (rủi ro đuôi, thanh "
+            "khoản...) — nếu không, rating sai (B1)."
+        ),
+    )
+    expected_value: str = Field(
+        description=(
+            "Khung Expected Value (B1) — BẮT BUỘC: (1) lấy đúng các kịch bản + xác "
+            "suất đã sinh ở phase trước; (2) tính EV có trọng số = Σ(xác suất × "
+            "payoff), ghi rõ phép tính; (3) nêu rating suy ra từ EV. "
+            "Đồng thời BẮC CẦU định giá ↔ khuyến nghị (B2): nếu định giá cho upside "
+            "X%, phải có một câu dạng 'Định giá cho upside X%, nhưng tôi khuyến nghị "
+            "Y vì...' — không được để định giá và khuyến nghị mâu thuẫn mà không "
+            "giải thích. Số liệu trích từ block 'SỐ LIỆU TÀI CHÍNH CHÍNH THỐNG'."
+        ),
+    )
+    ev_sensitivity: str = Field(
+        description=(
+            "Sensitivity của EV trong 1 lần chạy — tính thuần túy bằng số học, KHÔNG "
+            "gọi LLM thêm. Dùng bộ xác suất Bull/Base/Bear và payoff đã chốt ở "
+            "expected_value. "
+            "Bước 1 — EV_low: chuyển +5 điểm % từ Base sang Bear (Bear tăng 5pp, "
+            "Base giảm 5pp, Bull giữ nguyên). Tính lại EV_low = Σ(xác suất mới × payoff). "
+            "Bước 2 — EV_high: chuyển +5 điểm % từ Base sang Bull (Bull tăng 5pp, "
+            "Base giảm 5pp, Bear giữ nguyên). Tính lại EV_high = Σ(xác suất mới × payoff). "
+            "Bước 3 — báo cáo: 'EV sensitivity: [EV_low%, EV_high%]' kèm phép tính rõ. "
+            "Ví dụ: xác suất 45/35/20, payoff +18/0/-15 → "
+            "EV_low (40/30/30): 0.40×18+0.30×0+0.30×(-15)=7.2+0-4.5=+2.7%; "
+            "EV_high (50/30/20): 0.50×18+0.30×0+0.20×(-15)=9+0-3=+6.0%. "
+            "EV sensitivity: [+2.7%, +6.0%]."
+        ),
+    )
+    conviction: str = Field(
+        description=(
+            "Nhãn độ tin cậy DỰA TRÊN dải EV vừa tính — KHÔNG phải cảm tính. "
+            "Quy tắc bắt buộc: "
+            "(1) THẤP: nếu dải [EV_low, EV_high] chứa EV = 0% (ranh giới Hold/Underweight) "
+            "HOẶC nếu EV_low và EV_high sẽ dẫn đến rating KHÁC với rating đã chốt — "
+            "kết luận không ổn định, thay đổi nhỏ xác suất có thể đổi rating. "
+            "(2) CAO: nếu cả EV_low và EV_high đều nằm trong cùng vùng rating với EV, "
+            "VÀ EV_low cách ranh giới gần nhất ≥3 điểm % EV. "
+            "(3) TRUNG BÌNH: mọi trường hợp còn lại. "
+            "Format đầu ra: 'CAO — [lý do 1 câu]' / "
+            "'TRUNG BÌNH — [lý do 1 câu]' / 'THẤP — [lý do 1 câu]'."
         ),
     )
     executive_summary: str = Field(
@@ -193,7 +251,9 @@ class PortfolioDecision(BaseModel):
         description=(
             "Detailed reasoning anchored in specific evidence from the analysts' "
             "debate. If prior lessons are referenced in the prompt context, "
-            "incorporate them; otherwise rely solely on the current analysis."
+            "incorporate them; otherwise rely solely on the current analysis. "
+            "Chỉ bổ sung thông tin MỚI, không lặp lại nguyên văn luận điểm đã nêu "
+            "ở các phase trước (B4)."
         ),
     )
     price_target: Optional[float] = Field(
@@ -216,6 +276,10 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     """
     parts = [
         f"**Rating**: {decision.rating.value}",
+        f"**Conviction**: {decision.conviction}",
+        "",
+        f"**Phân Tích Expected Value & Định Giá**: {decision.expected_value}",
+        f"**EV Sensitivity**: {decision.ev_sensitivity}",
         "",
         f"**Executive Summary**: {decision.executive_summary}",
         "",
@@ -226,6 +290,39 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Phase-I Analyst Signal (Market / News / Fundamentals)
+# ---------------------------------------------------------------------------
+
+
+class AnalystSignal(BaseModel):
+    """Structured rating extracted from a Phase-I analyst report.
+
+    Produced by a second, lightweight LLM call after the analyst's prose
+    report is complete.  Kept separate from the prose so build_html can
+    read a reliable enum field instead of running heuristic regex.
+    """
+
+    recommendation: PortfolioRating = Field(
+        description=(
+            "Overall investment recommendation based on the analyst's domain. "
+            "Buy/Overweight = bullish; Hold = neutral; Underweight/Sell = bearish. "
+            "Pick the best fit for the analyst's overall conclusion."
+        ),
+    )
+    reasoning_summary: str = Field(
+        description=(
+            "One sentence (≤15 words) capturing the primary reason for this "
+            "recommendation. Be specific: name a concrete factor (metric, trend, "
+            "catalyst, or risk)."
+        ),
+    )
+
+
+def render_analyst_signal(signal: AnalystSignal) -> str:
+    return f"**Signal**: {signal.recommendation.value} — {signal.reasoning_summary}"
 
 
 # ---------------------------------------------------------------------------

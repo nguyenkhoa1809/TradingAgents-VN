@@ -1,6 +1,8 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    financials_section,
+    fact_check_section,
 )
 
 
@@ -33,10 +35,13 @@ Key points to focus on:
 - Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
 - Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
+- Sensitivity Anchoring: If the fundamentals report includes a sensitivity table (Phân Tích Độ Nhạy), you MUST use its specific numbers to support your bear case. State the downside scenario level of the swing variable and the corresponding fair value / downside it implies. Challenge the bull by pointing to the breakeven: "At {{swing_variable}} = X, fair value drops to Y — below the current price." Avoid vague claims about risk without quantifying the impact.
+- Data Substantiation: Every trend claim you make must be backed by at least 2–3 actual data points. When citing deterioration, show the series (e.g., margin Q1→Q2→Q3). Distinguish "cyclical trough" (temporary) from "structural decline" (multi-year). If you use a single bad quarter as evidence of a trend, the bull will legitimately challenge it — pre-empt this by showing the full series and explaining why this isn't just noise.
 
 Resources available:
 
 {instrument_context}
+{financials_section(state)}{fact_check_section(state)}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}

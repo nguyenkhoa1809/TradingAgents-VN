@@ -1,6 +1,8 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    financials_section,
+    fact_check_section,
 )
 
 
@@ -32,9 +34,12 @@ Key points to focus on:
 - Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
 - Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
 - Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
+- Sensitivity Anchoring: If the fundamentals report includes a sensitivity table (Phân Tích Độ Nhạy), you MUST use its specific numbers to support your bull case. State which level of the swing variable makes your thesis hold, and at what level it would break (breakeven). Avoid vague claims like "margins will improve" — anchor to the table's fair value range for the optimistic scenario.
+- Data Substantiation: Every trend claim you make must be backed by at least 2–3 actual data points (e.g., revenue Q1→Q2→Q3, or margin 3-year series). Explicitly distinguish between "recovery from trough" (one bad quarter followed by one good quarter) and "structural uptrend" (consistent improvement over 4+ periods). If you only have one good quarter after several bad ones, say "early signs of recovery" — do NOT call it a confirmed uptrend.
 
 Resources available:
 {instrument_context}
+{financials_section(state)}{fact_check_section(state)}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}

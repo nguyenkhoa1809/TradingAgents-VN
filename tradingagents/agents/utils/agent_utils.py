@@ -188,6 +188,84 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     )
 
 
+# Single source of truth (A1): canonical financials injected into every
+# number-touching agent. Computed once in Python at run start (A2/A3).
+_FINANCIALS_CITE_RULE = (
+    "\n\n[QUY TẮC SỐ LIỆU — BẮT BUỘC] Mọi con số tài chính (doanh thu, LNST, EPS, "
+    "margin, ROE/ROA/ROIC, P/E, P/B, D/E, FCF, dòng tiền...) trong phần phân tích "
+    "của bạn PHẢI trích nguyên văn từ block 'SỐ LIỆU TÀI CHÍNH CHÍNH THỐNG' được "
+    "cung cấp. TUYỆT ĐỐI không tự tính lại, không ước lượng, không lấy từ trí nhớ. "
+    "Nếu một chỉ số không có trong block, ghi rõ 'không có dữ liệu' thay vì bịa số.\n"
+    "[ĐỊNH DẠNG SỐ — BẮT BUỘC] Giữ NGUYÊN định dạng như trong block: dấu phẩy ngăn "
+    "nghìn (16,013), dấu chấm thập phân (1.06). Giá cổ phiếu luôn ghi 'X.X nghìn đồng'. "
+    "Dấu '%' CHỈ dùng cho tỷ lệ/biến động (vd +48% YoY), TUYỆT ĐỐI không gắn '%' vào "
+    "giá trị tuyệt đối (319 tỷ là số tiền, KHÔNG phải '319%').\n"
+    "[LẬP LUẬN SỐ — BẮT BUỘC] (1) Lợi nhuận forward: ưu tiên TTM (4 quý gần nhất). "
+    "KHÔNG annualize ngây thơ kiểu 'quý × 4'; nếu buộc phải annualize, ghi rõ caveat "
+    "mùa vụ. (2) Mọi so sánh 'cao nhất/thấp nhất/cao hơn' phải xét cửa sổ ≥8 quý (gồm "
+    "cả năm trước), nêu rõ phạm vi; KHÔNG dùng kiểu 'cao hơn mọi quý (trừ X)' tự mâu "
+    "thuẫn. (3) Thuật ngữ: dùng 'lợi nhuận sau thuế (LNST)', KHÔNG viết 'lợi nhuận sau "
+    "thu nhập'.\n"
+)
+
+
+def get_financials_block(state: Mapping[str, Any]) -> str:
+    """Return the canonical financials block (single source of truth) for the run.
+
+    Empty string when unavailable (non-VN tickers, fetch failure) — callers
+    should inject nothing in that case rather than fabricate.
+    """
+    block = state.get("financials_block")
+    return block if isinstance(block, str) and block.strip() else ""
+
+
+def financials_section(state: Mapping[str, Any]) -> str:
+    """Block + cite-only rule, ready to splice into an agent prompt.
+
+    Returns '' when no canonical data exists, so prompts degrade cleanly.
+    """
+    block = get_financials_block(state)
+    if not block:
+        return ""
+    return f"\n\n{block}{_FINANCIALS_CITE_RULE}"
+
+
+def fact_check_section(state: Mapping[str, Any]) -> str:
+    """Corrections từ C3 gate — inject vào Phase II agents để ngăn lan nhiễm factual.
+
+    Returns '' khi không có corrections, prompt không thay đổi.
+    """
+    corrections = state.get("fact_check_corrections", "")
+    if not corrections or not corrections.strip():
+        return ""
+    return f"\n\n{corrections.strip()}\n"
+
+
+def extract_analyst_rating(llm, report_text: str) -> "str | None":
+    """Second-pass extraction of PortfolioRating from a prose analyst report.
+
+    Uses the LLM's with_structured_output to get a reliable enum value.
+    Returns PortfolioRating.value string ("Buy", "Hold", etc.) or None on any failure.
+    A failure here never blocks the main agent flow — the summary table will show
+    'chưa có dữ liệu' for that row.
+    """
+    if not report_text or not report_text.strip():
+        return None
+    try:
+        from langchain_core.messages import HumanMessage
+        from tradingagents.agents.schemas import AnalystSignal
+        structured_llm = llm.with_structured_output(AnalystSignal)
+        signal = structured_llm.invoke([HumanMessage(content=(
+            "Extract the overall investment recommendation from the analyst report below. "
+            "Choose the single best fit: Buy / Overweight / Hold / Underweight / Sell. "
+            "Summarize the primary reason in ≤15 words.\n\n"
+            f"{report_text[:4000]}"
+        ))])
+        return signal.recommendation.value
+    except Exception:
+        return None
+
+
 def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add a context-anchored placeholder.

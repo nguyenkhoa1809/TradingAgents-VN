@@ -32,6 +32,13 @@ class NormalizedChatOpenAI(ChatOpenAI):
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
 
+    def _add_version(self, package_name: str, version: str) -> None:
+        """Compatibility stub — older langchain_core lacks this; newer langchain_openai calls it."""
+        try:
+            super()._add_version(package_name, version)
+        except AttributeError:
+            pass
+
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)
         if caps.preferred_structured_method == "none":
@@ -144,7 +151,7 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "reasoning_effort", "temperature",
+    "timeout", "max_retries", "reasoning_effort", "temperature", "seed",
     "api_key", "callbacks", "http_client", "http_async_client",
 )
 

@@ -63,7 +63,7 @@ for i, ticker in enumerate(TICKERS, 1):
 
     try:
         ta = TradingAgentsGraph(debug=False, config=config, selected_analysts=ANALYSTS)
-        state, decision = ta.propagate(ticker, TRADE_DATE)
+        state, decision = ta.propagate(ticker, TRADE_DATE, run_type="production")
 
         sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
         trader = state.get("trader_investment_decision", "")

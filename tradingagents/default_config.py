@@ -9,6 +9,7 @@ _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 # their .env file.
 _ENV_OVERRIDES = {
     "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
+    "TRADINGAGENTS_DEEP_THINK_PROVIDER":  "deep_think_provider",
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
@@ -18,6 +19,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_ANALYST_TEMPERATURE":  "analyst_temperature",
+    "TRADINGAGENTS_ANALYST_SEED":         "analyst_seed",
 }
 
 
@@ -53,6 +56,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "memory_log_max_entries": None,
     # LLM settings
     "llm_provider": "openai",
+    # When set, deep-think agents (Research Manager, Portfolio Manager) use this
+    # provider instead of llm_provider. Enables mixing providers per tier.
+    # None = use llm_provider for both tiers (backward-compatible default).
+    "deep_think_provider": None,
     "deep_think_llm": "gpt-5.5",
     "quick_think_llm": "gpt-5.4-mini",
     # When None, each provider's client falls back to its own default endpoint
@@ -70,6 +77,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # variation on models that honor it; reasoning models largely ignore it
     # and no setting makes LLM output bit-identical across runs (see README).
     "temperature": None,
+    # Determinism tier for Phase I analysts (Market/News/Fundamentals/Sentiment)
+    # and Phase V Portfolio Manager.  These phases produce the primary inputs
+    # and the final decision — low temperature reduces run-to-run variance.
+    # Phase II–IV (debate, trader, risk) continue to use "temperature" above.
+    # Set to None to disable the override and fall back to provider default.
+    "analyst_temperature": 0.3,
+    # Seed for Phase I analyst LLM.  DeepSeek (OpenAI-compatible) honours this;
+    # Anthropic does not expose a seed parameter.  None disables seed.
+    "analyst_seed": None,
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,

@@ -20,6 +20,7 @@ from .managers.research_manager import create_research_manager
 from .managers.portfolio_manager import create_portfolio_manager
 
 from .trader.trader import create_trader
+from .fact_check_gate import create_fact_check_gate
 
 __all__ = [
     "AgentState",
@@ -39,4 +40,5 @@ __all__ = [
     "create_sentiment_analyst",
     "create_social_media_analyst",  # deprecated; will be removed in a future version
     "create_trader",
+    "create_fact_check_gate",
 ]

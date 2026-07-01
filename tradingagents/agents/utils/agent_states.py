@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Optional
 from typing_extensions import TypedDict
 from langgraph.graph import MessagesState
 
@@ -73,3 +73,20 @@ class AgentState(MessagesState):
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]
+
+    # Single source of truth for financials (A1) — computed once in Python at
+    # run start, injected into every number-touching agent (cite-only).
+    financials_block: Annotated[str, "Canonical financial data block (single source of truth)"]
+    financials_chart_json: Annotated[str, "VN_CHART_DATA JSON for render_report charts"]
+
+    # Grounded fact-check gate (Round 3 C1-C5)
+    company_profile_block: Annotated[str, "Company profile from vnstock (C5 ground truth for entity verification)"]
+    fact_check_corrections: Annotated[str, "Corrections from C3 gate: contradicted/unverified entity claims"]
+    verified_entity_claims: Annotated[str, "JSON array of entity claims with verdicts (C1/C2 output)"]
+
+    # Phase-I structured ratings (Round 5 E3) — PortfolioRating value string or None.
+    # Set by a second lightweight LLM call after each analyst's prose report is done.
+    # None means the extraction was skipped or failed — render as "chưa có dữ liệu".
+    market_analyst_rating: Annotated[Optional[str], "Structured rating from Market Analyst (AnalystSignal.recommendation)"]
+    news_analyst_rating: Annotated[Optional[str], "Structured rating from News Analyst"]
+    fundamentals_analyst_rating: Annotated[Optional[str], "Structured rating from Fundamentals Analyst"]

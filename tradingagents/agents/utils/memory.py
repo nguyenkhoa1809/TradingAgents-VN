@@ -15,6 +15,8 @@ class TradingMemoryLog:
     # Precompiled patterns — avoids re-compilation on every load_entries() call
     _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\nREFLECTION:|\Z)", re.DOTALL)
     _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
+    # Detects a resolved-return field in old-format tags (e.g. "+0.0%", "-3.5%")
+    _PCT_RE = re.compile(r"^[+\-]?\d+\.\d+%$")
 
     def __init__(self, config: dict = None):
         cfg = config or {}
@@ -33,18 +35,31 @@ class TradingMemoryLog:
         ticker: str,
         trade_date: str,
         final_trade_decision: str,
+        run_type: str = "unknown",
     ) -> None:
-        """Append pending entry at end of propagate(). No LLM call."""
+        """Append pending entry at end of propagate(). No LLM call.
+
+        ``run_type`` must be set explicitly by callers — "production" for real
+        investment decisions, "debug" / "test" for exploratory runs.  The
+        default "unknown" acts as a safety net: get_past_context() excludes
+        every entry that is not "production", so an unlabelled run cannot
+        silently pollute future PM decisions.
+        """
         if not self._log_path:
             return
-        # Idempotency guard: fast raw-text scan instead of full parse
+        # Idempotency guard: skip if a pending entry with the same run_type already exists.
+        # Match on run_type suffix so old-format entries (4-field, no run_type) don't
+        # block new production entries, and debug runs don't block production runs.
         if self._log_path.exists():
             raw = self._log_path.read_text(encoding="utf-8")
             for line in raw.splitlines():
-                if line.startswith(f"[{trade_date} | {ticker} |") and line.endswith("| pending]"):
+                if (
+                    line.startswith(f"[{trade_date} | {ticker} |")
+                    and line.endswith(f"| {run_type} | pending]")
+                ):
                     return
         rating = parse_rating(final_trade_decision)
-        tag = f"[{trade_date} | {ticker} | {rating} | pending]"
+        tag = f"[{trade_date} | {ticker} | {rating} | {run_type} | pending]"
         entry = f"{tag}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
         with open(self._log_path, "a", encoding="utf-8") as f:
             f.write(entry)
@@ -69,8 +84,16 @@ class TradingMemoryLog:
         return [e for e in self.load_entries() if e.get("pending")]
 
     def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3) -> str:
-        """Return formatted past context string for agent prompt injection."""
-        entries = [e for e in self.load_entries() if not e.get("pending")]
+        """Return formatted past context string for agent prompt injection.
+
+        Only entries with ``run_type == "production"`` are included.  Entries
+        from debug/test/unknown runs are excluded so exploratory pipeline runs
+        cannot influence future PM decisions.
+        """
+        entries = [
+            e for e in self.load_entries()
+            if not e.get("pending") and e.get("run_type") == "production"
+        ]
         if not entries:
             return ""
 
@@ -138,13 +161,26 @@ class TradingMemoryLog:
                 and tag_line.startswith(pending_prefix)
                 and tag_line.endswith("| pending]")
             ):
-                # Parse rating from the existing pending tag
                 fields = [f.strip() for f in tag_line[1:-1].split("|")]
                 rating = fields[2]
-                new_tag = (
-                    f"[{trade_date} | {ticker} | {rating}"
-                    f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
-                )
+                # Preserve run_type from new-format pending tags
+                # New format: [date | ticker | rating | run_type | pending]
+                # Old format: [date | ticker | rating | pending]
+                if (
+                    len(fields) >= 5
+                    and fields[3] != "pending"
+                    and not self._PCT_RE.match(fields[3])
+                ):
+                    run_type = fields[3]
+                    new_tag = (
+                        f"[{trade_date} | {ticker} | {rating} | {run_type}"
+                        f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
+                    )
+                else:
+                    new_tag = (
+                        f"[{trade_date} | {ticker} | {rating}"
+                        f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
+                    )
                 rest = "\n".join(lines[1:])
                 new_blocks.append(
                     f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}"
@@ -195,10 +231,21 @@ class TradingMemoryLog:
                     rating = fields[2]
                     raw_pct = f"{upd['raw_return']:+.1%}"
                     alpha_pct = f"{upd['alpha_return']:+.1%}"
-                    new_tag = (
-                        f"[{trade_date} | {ticker} | {rating}"
-                        f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
-                    )
+                    if (
+                        len(fields) >= 5
+                        and fields[3] != "pending"
+                        and not self._PCT_RE.match(fields[3])
+                    ):
+                        run_type = fields[3]
+                        new_tag = (
+                            f"[{trade_date} | {ticker} | {rating} | {run_type}"
+                            f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
+                        )
+                    else:
+                        new_tag = (
+                            f"[{trade_date} | {ticker} | {rating}"
+                            f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
+                        )
                     rest = "\n".join(lines[1:])
                     new_blocks.append(
                         f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
@@ -265,14 +312,35 @@ class TradingMemoryLog:
         fields = [f.strip() for f in tag_line[1:-1].split("|")]
         if len(fields) < 4:
             return None
+
+        # Detect old vs new tag format.
+        # Old pending:  [date | ticker | rating | pending]          (fields[3]=="pending")
+        # Old resolved: [date | ticker | rating | raw% | alpha% | Nd]  (fields[3] is pct/n/a)
+        # New pending:  [date | ticker | rating | run_type | pending]  (fields[4]=="pending")
+        # New resolved: [date | ticker | rating | run_type | raw% | alpha% | Nd]
+        f3 = fields[3]
+        is_old_pending = f3 == "pending"
+        is_old_resolved = not is_old_pending and (self._PCT_RE.match(f3) or f3 in ("n/a", "N/A"))
+        is_new_format = not is_old_pending and not is_old_resolved
+
+        if is_new_format:
+            run_type = f3
+            is_pending = len(fields) >= 5 and fields[4] == "pending"
+            raw_idx, alpha_idx, holding_idx = 4, 5, 6
+        else:
+            run_type = "unknown"
+            is_pending = is_old_pending
+            raw_idx, alpha_idx, holding_idx = 3, 4, 5
+
         entry = {
             "date": fields[0],
             "ticker": fields[1],
             "rating": fields[2],
-            "pending": fields[3] == "pending",
-            "raw": fields[3] if fields[3] != "pending" else None,
-            "alpha": fields[4] if len(fields) > 4 else None,
-            "holding": fields[5] if len(fields) > 5 else None,
+            "run_type": run_type,
+            "pending": is_pending,
+            "raw": fields[raw_idx] if not is_pending and len(fields) > raw_idx else None,
+            "alpha": fields[alpha_idx] if len(fields) > alpha_idx else None,
+            "holding": fields[holding_idx] if len(fields) > holding_idx else None,
         }
         body = "\n".join(lines[1:]).strip()
         decision_match = self._DECISION_RE.search(body)
@@ -285,7 +353,8 @@ class TradingMemoryLog:
         raw = e["raw"] or "n/a"
         alpha = e["alpha"] or "n/a"
         holding = e["holding"] or "n/a"
-        tag = f"[{e['date']} | {e['ticker']} | {e['rating']} | {raw} | {alpha} | {holding}]"
+        run_type = e.get("run_type", "unknown")
+        tag = f"[{e['date']} | {e['ticker']} | {e['rating']} | {run_type} | {raw} | {alpha} | {holding}]"
         parts = [tag, f"DECISION:\n{e['decision']}"]
         if e["reflection"]:
             parts.append(f"REFLECTION:\n{e['reflection']}")

@@ -5,6 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_stock_data,
     get_verified_market_snapshot,
+    extract_analyst_rating,
 )
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market_router import is_vn_ticker
@@ -50,7 +51,21 @@ def create_market_analyst(llm):
             get_verified_market_snapshot,
         ]
 
-        vn_context = _VN_MARKET_CONTEXT if is_vn_ticker(ticker) else ""
+        is_vn = is_vn_ticker(ticker)
+        vn_context = _VN_MARKET_CONTEXT if is_vn else ""
+
+        # ── Pre-load technical data (52w price/vol/MA, RSI, MACD, indices) ──
+        tech_chart_json = ""
+        tech_summary_md = ""
+        if is_vn:
+            try:
+                from tradingagents.agents.utils.vn_technical_fetcher import fetch_vn_technical_context
+                _tc = fetch_vn_technical_context(ticker)
+                if not _tc.get("error"):
+                    tech_chart_json = _tc["chart_json"]
+                    tech_summary_md = _tc["summary_md"]
+            except Exception:
+                pass
 
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
@@ -84,6 +99,7 @@ Before writing the final report, call get_verified_market_snapshot for this tick
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + vn_context
+            + (("\n\n" + tech_summary_md) if tech_summary_md else "")
             + get_language_instruction()
         )
 
@@ -114,13 +130,19 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
         result = chain.invoke(state["messages"])
 
         report = ""
+        market_rating = None
 
         if len(result.tool_calls) == 0:
             report = result.content
+            market_rating = extract_analyst_rating(llm, report)
+            # Embed technical chart data for render_report.py to draw BSR-style charts
+            if tech_chart_json:
+                report += f"\n<!-- VN_TECH_DATA {tech_chart_json} -->"
 
         return {
             "messages": [result],
             "market_report": report,
+            "market_analyst_rating": market_rating,
         }
 
     return market_analyst_node

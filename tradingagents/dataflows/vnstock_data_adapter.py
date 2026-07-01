@@ -386,7 +386,9 @@ def get_indicators(
     from vnstock_data import Market  # type: ignore
 
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
-    start_dt = end_dt - timedelta(days=look_back_days + 60)  # extra buffer for weekends
+    # Warm-up đủ cho rolling dài nhất (SMA200 cần 200 phiên ~ 290 ngày lịch) +
+    # cửa sổ hiển thị. Indicator tính trên full series, chỉ .tail(look_back_days) khi trả về.
+    start_dt = end_dt - timedelta(days=look_back_days + 380)
     start_date = start_dt.strftime("%Y-%m-%d")
 
     try:
@@ -892,37 +894,104 @@ def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> s
     except Exception as exc:
         price_block = f"Price-band sentiment: error — {exc}"
 
-    # ── 2. CafeF RSS headlines (free, no auth) ───────────────────────────────
-    news_block = _fetch_cafef_headlines(sym)
+    # ── 2. Dòng tiền khối ngoại (NN ròng) — tín hiệu sentiment mạnh nhất TT VN ──
+    foreign_block = _fetch_foreign_flow(sym, curr_date, look_back_days)
 
-    # ── 3. vnstock_news Crawler ──────────────────────────────────────────────
-    vnstock_news_block = "vnstock_news: not available."
-    try:
-        from vnstock_news import Crawler  # type: ignore  # noqa: F401
-        articles = _crawl_vn_news(limit_per_feed=15)
-        relevant = [a for a in articles if sym in str(a.get("title", "")).upper()]
-        if not relevant:
-            relevant = articles[:8]
-        if relevant:
-            lines = [
-                f"- [{a.get('published', '')}] {a.get('title', 'No title')}"
-                for a in relevant[:12]
-            ]
-            vnstock_news_block = (
-                f"## vnstock_news headlines ({len(relevant)} articles)\n"
-                + "\n".join(lines)
-            )
-    except ImportError:
-        vnstock_news_block = "vnstock_news: not installed."
-    except Exception as exc:
-        vnstock_news_block = f"vnstock_news: error — {exc}"
+    # ── 3. Tin tức theo mã (vnstock_data Company.news — theo đúng ticker) ──────
+    company_news_block = _fetch_vn_company_news(sym)
+
+    # ── 4. CafeF / Google News RSS (bổ sung, best-effort) ─────────────────────
+    cafef_block = _fetch_cafef_headlines(sym)
 
     return (
         f"# VN Sentiment Data for {sym} — {curr_date}\n\n"
         f"{price_block}\n\n"
-        f"## CafeF Headlines\n{news_block}\n\n"
-        f"{vnstock_news_block}\n"
+        f"{foreign_block}\n\n"
+        f"{company_news_block}\n\n"
+        f"## CafeF / Google News Headlines\n{cafef_block}\n"
     )
+
+
+def _fetch_foreign_flow(sym: str, curr_date: str, look_back_days: int = 20) -> str:
+    """Tóm tắt dòng tiền khối ngoại (NN mua/bán ròng) — best-effort, fallback source."""
+    end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+    start_dt = end_dt - timedelta(days=look_back_days + 16)
+    for src in ("VCI", "KBS"):
+        try:
+            from vnstock_data import Trading
+            import pandas as pd
+            fgn = Trading(symbol=sym, source=src).foreign_trade(
+                start=start_dt.strftime("%Y-%m-%d"), end=curr_date
+            )
+            if fgn is None or fgn.empty or "fr_net_value_total" not in fgn.columns:
+                continue
+            fgn = fgn.sort_values("trading_date").tail(look_back_days)
+            net = pd.to_numeric(fgn["fr_net_value_total"], errors="coerce").fillna(0) / 1e9  # tỷ đ
+            n = len(net)
+            total_net = float(net.sum())
+            last5 = float(net.tail(5).sum())
+            buy_days = int((net > 0).sum())
+            sell_days = int((net < 0).sum())
+            own_txt = ""
+            if "fr_owned_percentage" in fgn.columns:
+                own = pd.to_numeric(fgn["fr_owned_percentage"], errors="coerce").dropna() * 100
+                if len(own) >= 2:
+                    own_txt = f"\n- Sở hữu NN: {own.iloc[-1]:.2f}% ({own.iloc[-1] - own.iloc[0]:+.2f} điểm % trong kỳ)"
+
+            if total_net > 0 and last5 >= 0:
+                label = "TÍCH CỰC — khối ngoại MUA RÒNG, dòng tiền ngoại đang vào"
+            elif total_net < 0 and last5 <= 0:
+                label = "TIÊU CỰC — khối ngoại BÁN RÒNG, dòng tiền ngoại đang rút"
+            elif last5 > 0:
+                label = "ĐANG CẢI THIỆN — NN quay lại mua ròng 5 phiên gần nhất"
+            elif last5 < 0:
+                label = "ĐANG XẤU ĐI — NN bán ròng 5 phiên gần nhất dù luỹ kế còn dương"
+            else:
+                label = "TRUNG LẬP — dòng tiền NN cân bằng"
+
+            return (
+                f"## Dòng tiền khối ngoại (NN, {n} phiên gần nhất)\n"
+                f"- NN ròng luỹ kế: **{total_net:+,.1f} tỷ đồng** "
+                f"({buy_days} phiên mua ròng / {sell_days} phiên bán ròng)\n"
+                f"- 5 phiên gần nhất: {last5:+,.1f} tỷ đồng{own_txt}\n"
+                f"- **Tín hiệu NN**: {label}\n"
+            )
+        except Exception:
+            continue
+    return "## Dòng tiền khối ngoại\nKhông lấy được dữ liệu khối ngoại."
+
+
+def _fetch_vn_company_news(sym: str, n: int = 12) -> str:
+    """Tin tức theo đúng mã từ vnstock_data Company.news (title + ngày + nguồn)."""
+    for src in ("VCI", "KBS"):
+        try:
+            from vnstock_data import Company
+            df = Company(symbol=sym, source=src).news()
+            if df is None or df.empty:
+                continue
+            tcol = next((c for c in ("news_title", "friendly_title", "title") if c in df.columns), None)
+            dcol = next((c for c in ("public_date", "publish_time", "date") if c in df.columns), None)
+            if not tcol:
+                continue
+            if dcol:
+                import pandas as pd
+                df = df.copy()
+                df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
+                df = df.sort_values(dcol, ascending=False)
+            lines = []
+            for _, r in df.head(n).iterrows():
+                title = str(r.get(tcol) or "").strip()
+                if not title:
+                    continue
+                d = str(r.get(dcol))[:10] if dcol else ""
+                src_name = str(r.get("news_source") or "").strip()
+                src_tag = f" ({src_name})" if src_name and src_name.lower() != "none" else ""
+                lines.append(f"- [{d}] {title}{src_tag}")
+            if lines:
+                return f"## Tin tức theo mã {sym} (vnstock_data, {len(lines)} tin mới nhất)\n" + "\n".join(lines)
+        except Exception:
+            continue
+    return f"## Tin tức theo mã {sym}\nKhông lấy được tin tức công ty."
 
 
 def _interpret_price_band(

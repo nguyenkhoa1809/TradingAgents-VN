@@ -1,6 +1,34 @@
+"""
+main.py — Quick Reference
+──────────────────────────────────────────────────────────────────
+Thay đổi thường gặp:
+
+  TICKERS           dòng 152  — mã CK cần phân tích, vd: ["VCB", "TCB"]
+  TRADE_DATE        dòng 153  — ngày phân tích (mặc định: hôm nay)
+  OUTPUT_LANGUAGE   dòng 157  — "Vietnamese" / "English" — ngôn ngữ mọi báo cáo
+  PROVIDER          dòng 186  — model LLM chính (deepseek-pro / claude / openrouter / ...)
+  ANALYSTS          dòng 234  — bật/tắt analyst (market / fundamentals / news / social)
+  VN_PROSE_REFINE   dòng 162  — True/False — bật/tắt GLM prose refinement tiếng Việt
+
+Thêm LLM provider / model mới:
+  _PROVIDER_PRESETS dòng 188  — thêm preset { llm_provider, deep_think_llm, quick_think_llm }
+  _PRICING_PER_M    dòng 44   — thêm giá ($/M tokens) để tính cost hiển thị
+
+Sửa prompt phân tích:
+  Fundamentals    tradingagents/agents/analysts/fundamentals_analyst.py
+  Market/News/Social  tradingagents/agents/analysts/<name>_analyst.py
+  Ngôn ngữ output  tradingagents/agents/utils/agent_utils.py → get_language_instruction()
+
+API keys (.env):
+  DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY  — LLM chính
+  ZHIPU_API_KEY  — Z.AI free tier, dùng cho GLM prose refinement
+──────────────────────────────────────────────────────────────────
+"""
 import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+import os
+import re as _re
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
@@ -9,8 +37,14 @@ load_dotenv(Path(__file__).parent / ".env")
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.market_router import is_vn_ticker
 from cli.stats_handler import StatsCallbackHandler
-from render_report import build_html
+from render_report import build_html, validate_report
+
+# Validator gate (A7/A8): production CHẶN report mâu thuẫn (không tạo HTML) và thử
+# regenerate tối đa MAX_REGEN lần. Chạy với cờ --dev để chỉ cảnh báo + render kèm banner.
+DEV_MODE  = "--dev" in sys.argv
+MAX_REGEN = 2
 
 # Pricing per million tokens (input, output) — update as providers change rates
 _PRICING_PER_M: dict[str, tuple[float, float]] = {
@@ -25,17 +59,125 @@ _PRICING_PER_M: dict[str, tuple[float, float]] = {
     "gpt-5.4":                  (1.25,  5.00),
     "gpt-5.4-mini":             (0.15,  0.60),
     "gpt-5.4-nano":             (0.075, 0.30),
+    # Z.AI / GLM models (via OpenRouter)
+    "z-ai/glm-5.2":             (1.40,  4.40),
+    "z-ai/glm-4.6":             (0.60,  2.20),
+    "z-ai/glm-4.5-air":         (0.20,  1.10),
 }
 
 def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     rate_in, rate_out = _PRICING_PER_M.get(model, (0.0, 0.0))
     return (tokens_in * rate_in + tokens_out * rate_out) / 1_000_000
 
+
+_CHART_COMMENT_RE = _re.compile(r"<!--\s*(?:VN_CHART_DATA|VN_TECH_DATA)\s+\{.*?\}\s*-->", _re.DOTALL)
+
+
+def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> dict[str, str]:
+    """Post-process selected VN sections through GLM for better Vietnamese prose quality.
+
+    Uses ZHIPU_API_KEY (bigmodel.cn, free glm-4-flash) if available,
+    otherwise falls back to OPENROUTER_API_KEY (z-ai/glm-4.5-air, paid).
+    """
+    zhipu_key = os.getenv("ZHIPU_API_KEY")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+
+    if zhipu_key:
+        base_url = "https://open.bigmodel.cn/api/paas/v4/"
+        api_key  = zhipu_key
+        model    = "glm-4.5-flash"
+        print("  [GLM] Using Z.AI direct (free tier)")
+    elif openrouter_key:
+        base_url = "https://openrouter.ai/api/v1"
+        api_key  = openrouter_key
+        model    = "z-ai/glm-4.5-air"
+        print("  [GLM] Using OpenRouter (z-ai/glm-4.5-air)")
+    else:
+        print("  [GLM] Skipped: set ZHIPU_API_KEY (free) or OPENROUTER_API_KEY in .env")
+        return sections
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=base_url, api_key=api_key)
+    except ImportError:
+        print("  [GLM] Skipped: openai package not installed")
+        return sections
+
+    refined = dict(sections)
+    for key in target_keys:
+        content = sections.get(key, "")
+        if not content.strip():
+            continue
+
+        # Preserve embedded chart data comment (must survive the rewrite)
+        chart_comment = ""
+        m = _CHART_COMMENT_RE.search(content)
+        if m:
+            chart_comment = m.group(0)
+            content_clean = _CHART_COMMENT_RE.sub("", content).strip()
+        else:
+            content_clean = content
+
+        try:
+            print(f"  [GLM] Refining {key} ({len(content_clean):,} chars)...")
+            # GLM-4.5 mặc định bật "thinking" — tắt đi vì viết lại văn phong không cần reasoning
+            # (nếu bật, reasoning ăn hết token output → content rỗng)
+            extra = {"thinking": {"type": "disabled"}} if model.startswith("glm-4.5") else {}
+            resp = client.chat.completions.create(
+                model=model,
+                max_tokens=8192,
+                extra_body=extra,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Bạn là chuyên gia biên tập báo cáo phân tích tài chính tiếng Việt. "
+                            "Viết lại đoạn phân tích sau với văn phong chuyên nghiệp, tự nhiên, "
+                            "như một chuyên viên phân tích người Việt viết cho đồng nghiệp đọc.\n\n"
+                            "Quy tắc bắt buộc:\n"
+                            "1. Giữ nguyên 100% số liệu tài chính và tất cả chỉ số định lượng\n"
+                            "2. Giữ nguyên cấu trúc heading markdown (##, ###) và **bold**\n"
+                            "3. Giữ nguyên toàn bộ bảng markdown\n"
+                            "4. Không rút gọn nội dung — giữ đủ chiều sâu phân tích\n"
+                            "5. Chỉ cải thiện văn phong, cách diễn đạt, độ tự nhiên của tiếng Việt\n"
+                            "6. Giữ nguyên các marker trong ngoặc vuông như [TÍCH CỰC], "
+                            "[TRUNG LẬP], [TIÊU CỰC] — KHÔNG xóa, KHÔNG đổi vị trí\n"
+                            "7. Giữ nguyên các comment HTML dạng <!-- ... --> nếu có\n"
+                            "8. Trả về markdown thuần túy, không thêm lời giải thích hay tiêu đề mới"
+                        ),
+                    },
+                    {"role": "user", "content": content_clean},
+                ],
+            )
+            refined_text = resp.choices[0].message.content or content_clean
+            if chart_comment:
+                refined_text += f"\n{chart_comment}"
+            refined[key] = refined_text
+            print(f"  [GLM] Done {key} → {len(refined_text):,} chars")
+        except Exception as e:
+            print(f"  [GLM] Skipped {key}: {e}")
+
+    return refined
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # Single ticker:  TICKERS = ["VCB"]
 # Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
-TICKERS    = ["VHM"]
+TICKERS    = ["PVD"]
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
+
+# OUTPUT LANGUAGE — ngôn ngữ của TẤT CẢ báo cáo (tranh luận nội bộ vẫn English)
+# "Vietnamese" → mọi analyst viết tiếng Việt từ gốc. "English" → mặc định.
+OUTPUT_LANGUAGE = "Vietnamese"
+
+# VN PROSE REFINEMENT — optional GLM post-processing (only for VN tickers)
+# Priority: ZHIPU_API_KEY (bigmodel.cn, free tier) → OPENROUTER_API_KEY (paid)
+# Add ZHIPU_API_KEY to .env to use free glm-4-flash. Get key at: bigmodel.cn
+VN_PROSE_REFINE = True
+VN_PROSE_REFINE_SECTIONS = [
+    "market_report", "sentiment_report", "news_report",
+    "fundamentals_report", "investment_plan", "trader_investment_plan",
+    "final_trade_decision",
+]
 
 
 # PROVIDER — change this one line to switch LLM provider
@@ -113,41 +255,85 @@ SECTION_KEYS = [
 
 config = DEFAULT_CONFIG.copy()
 config.update(_PROVIDER_PRESETS[PROVIDER])
+config["output_language"] = OUTPUT_LANGUAGE
+
+# Research Manager + Portfolio Manager → Claude Sonnet (deep tier only).
+# Quick-tier agents (analysts, researchers, trader, risk) stay on PROVIDER above.
+# Rollback: comment out the 2 lines below.
+config["deep_think_provider"] = "anthropic"
+config["deep_think_llm"] = "claude-sonnet-4-6"
 
 _model_info = _PROVIDER_PRESETS[PROVIDER]
 
 for TICKER in TICKERS:
     print(f"\n{'='*55}\n  Analyzing {TICKER} ({TICKERS.index(TICKER)+1}/{len(TICKERS)})\n{'='*55}")
-    deep_stats  = StatsCallbackHandler()
-    quick_stats = StatsCallbackHandler()
-    ta = TradingAgentsGraph(
-        debug=True, config=config, selected_analysts=ANALYSTS,
-        deep_callbacks=[deep_stats], quick_callbacks=[quick_stats],
-    )
-    state, decision = ta.propagate(TICKER, TRADE_DATE)
-    print(decision)
 
-    # ── Cost summary ───────────────────────────────────────────────────────────
-    ds = deep_stats.get_stats()
-    qs = quick_stats.get_stats()
-    deep_cost  = _calc_cost(_model_info["deep_think_llm"],  ds["tokens_in"], ds["tokens_out"])
-    quick_cost = _calc_cost(_model_info["quick_think_llm"], qs["tokens_in"], qs["tokens_out"])
-    total_cost  = deep_cost + quick_cost
-    total_tok_in  = ds["tokens_in"]  + qs["tokens_in"]
-    total_tok_out = ds["tokens_out"] + qs["tokens_out"]
-    cost_str = (
-        f"${total_cost:.4f} · {total_tok_in+total_tok_out:,} tokens "
-        f"({total_tok_in:,}in / {total_tok_out:,}out)"
-    )
-    print(f"\nTokens — deep: {ds['tokens_in']:,}in / {ds['tokens_out']:,}out  "
-          f"| quick: {qs['tokens_in']:,}in / {qs['tokens_out']:,}out")
-    print(f"Cost   — {cost_str}")
+    sections, cost_str, warnings = None, "", []
+    # Block + regenerate (A8): chạy lại pipeline tối đa MAX_REGEN lần nếu validator
+    # phát hiện mâu thuẫn. Dev mode bỏ qua gate ngay từ lần đầu.
+    for attempt in range(MAX_REGEN + 1):
+        if attempt > 0:
+            print(f"\n  ↻ Regenerate (lần {attempt+1}/{MAX_REGEN+1}) — validator/fact-check phát hiện lỗi")
+        deep_stats  = StatsCallbackHandler()
+        quick_stats = StatsCallbackHandler()
+        ta = TradingAgentsGraph(
+            debug=True, config=config, selected_analysts=ANALYSTS,
+            deep_callbacks=[deep_stats], quick_callbacks=[quick_stats],
+        )
+        state, decision = ta.propagate(TICKER, TRADE_DATE, run_type="production")
+        print(decision)
 
-    # ── Save HTML report ───────────────────────────────────────────────────────
-    sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
-    trader = state.get("trader_investment_decision", "")
-    if isinstance(trader, str) and trader.strip():
-        sections["trader_investment_plan"] = trader
+        # ── Cost summary ───────────────────────────────────────────────────────
+        ds = deep_stats.get_stats()
+        qs = quick_stats.get_stats()
+        deep_cost  = _calc_cost(_model_info["deep_think_llm"],  ds["tokens_in"], ds["tokens_out"])
+        quick_cost = _calc_cost(_model_info["quick_think_llm"], qs["tokens_in"], qs["tokens_out"])
+        total_cost  = deep_cost + quick_cost
+        total_tok_in  = ds["tokens_in"]  + qs["tokens_in"]
+        total_tok_out = ds["tokens_out"] + qs["tokens_out"]
+        cost_str = (
+            f"${total_cost:.4f} · {total_tok_in+total_tok_out:,} tokens "
+            f"({total_tok_in:,}in / {total_tok_out:,}out)"
+        )
+        print(f"\nTokens — deep: {ds['tokens_in']:,}in / {ds['tokens_out']:,}out  "
+              f"| quick: {qs['tokens_in']:,}in / {qs['tokens_out']:,}out")
+        print(f"Cost   — {cost_str}")
+
+        # ── Build sections ───────────────────────────────────────────────────────
+        sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
+        trader = state.get("trader_investment_decision", "")
+        if isinstance(trader, str) and trader.strip():
+            sections["trader_investment_plan"] = trader
+
+        # ── VN Prose Refinement via GLM (Z.AI on OpenRouter) ──────────────────────
+        if VN_PROSE_REFINE and is_vn_ticker(TICKER) and sections:
+            print(f"\n[GLM] Refining Vietnamese prose...")
+            sections = _refine_vn_prose(sections, VN_PROSE_REFINE_SECTIONS)
+
+        # ── Fact-check gate (C3) — log contradictions ────────────────────────────
+        fact_corrections = state.get("fact_check_corrections", "")
+        has_contradictions = "❌ **BÁC BỎ**" in (fact_corrections or "")
+        if has_contradictions:
+            print(f"\n  ⚠  FactCheck: entity claim(s) CONTRADICTED — corrections injected into Phase II")
+            if not DEV_MODE:
+                print(f"      Phase II đã nhận corrections; nếu report vẫn dùng claim sai → regenerate")
+
+        # ── Validator gate (A8) ───────────────────────────────────────────────────
+        warnings = validate_report(sections)
+        # Thêm fact-check contradiction vào điều kiện regenerate (C3)
+        should_regenerate = bool(warnings) or (has_contradictions and attempt == 0)
+        if not should_regenerate or DEV_MODE:
+            break
+        if warnings:
+            print(f"\n  ✖ Validator phát hiện {len(warnings)} mâu thuẫn:")
+            for w in warnings:
+                print(f"      - {w}")
+
+    # Sau khi thoát loop: chặn render nếu vẫn còn mâu thuẫn (production).
+    if warnings and not DEV_MODE:
+        print(f"\n  ⛔ BLOCKED: {TICKER} vẫn fail validator sau {MAX_REGEN+1} lần — "
+              f"KHÔNG tạo HTML. Chạy lại với cờ --dev để render kèm banner cảnh báo.")
+        continue
 
     if sections:
         out_dir = Path(__file__).parent / "reports" / TICKER
@@ -161,6 +347,11 @@ for TICKER in TICKERS:
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             model_info=_model_info,
             cost_str=cost_str,
+            agent_ratings={
+                "market":       state.get("market_analyst_rating"),
+                "news":         state.get("news_analyst_rating"),
+                "fundamentals": state.get("fundamentals_analyst_rating"),
+            },
         )
         out_path.write_text(html, encoding="utf-8")
         print(f"\nReport saved: {out_path.resolve()}")

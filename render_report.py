@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import io
+import json
 import os
 import re
 import sys
@@ -28,6 +29,46 @@ import webbrowser
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 from datetime import datetime
 from pathlib import Path
+
+# Optional: VN chart renderer (requires tradingagents package in PYTHONPATH)
+_render_vn_charts_html = None
+try:
+    from tradingagents.agents.utils.vn_financial_fetcher import render_vn_charts_html as _render_vn_charts_html
+except Exception:
+    pass
+
+
+_VN_CHART_RE = re.compile(r"<!--\s*VN_CHART_DATA\s+(\{.*?\})\s*-->", re.DOTALL)
+_VN_TECH_RE  = re.compile(r"<!--\s*VN_TECH_DATA\s+(\{.*?\})\s*-->", re.DOTALL)
+
+
+def _extract_vn_chart_data(content: str) -> tuple[str, dict]:
+    """
+    Strips the <!-- VN_CHART_DATA {...} --> comment from content.
+    Returns (cleaned_content, chart_data_dict).
+    """
+    m = _VN_CHART_RE.search(content)
+    if not m:
+        return content, {}
+    try:
+        data = json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+    cleaned = _VN_CHART_RE.sub("", content).strip()
+    return cleaned, data
+
+
+def _extract_vn_tech_data(content: str) -> tuple[str, dict]:
+    """Strips the <!-- VN_TECH_DATA {...} --> comment (market report technicals)."""
+    m = _VN_TECH_RE.search(content)
+    if not m:
+        return content, {}
+    try:
+        data = json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+    cleaned = _VN_TECH_RE.sub("", content).strip()
+    return cleaned, data
 
 # ---------------------------------------------------------------------------
 # Dependency: markdown → install if missing
@@ -167,10 +208,66 @@ def detect_signal(text: str) -> tuple[str, str, str, str]:
     return ("⚪", "#6b7280", "#1f2937", "UNKNOWN")
 
 
+def _inline_md(text: str) -> str:
+    """Escape HTML then render inline **bold** — for short strings (banner items)
+    that must go through a render step instead of leaking raw markdown (A9)."""
+    s = _html.escape(text)
+    s = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    return s
+
+
+def _normalize_md_tables(text: str) -> str:
+    """Ensure a blank line precedes every markdown table block.
+
+    The LLM often emits a table right after a heading/paragraph with no blank
+    line; python-markdown's ``tables`` extension then fails to recognise it and
+    the raw ``| ... |`` / ``|---|`` leaks into the HTML (A4). Inserting the
+    blank line makes the parser convert it to a real <table>.
+    """
+    def is_row(s: str) -> bool:
+        s = s.strip()
+        return s.startswith("|") and s.count("|") >= 2
+
+    out: list[str] = []
+    for line in text.split("\n"):
+        if is_row(line) and out and out[-1].strip() != "" and not is_row(out[-1]):
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
+_SOURCE_TAG_RE = _re.compile(r"\[nguồn:\s*([^\]]{1,200})\]", _re.IGNORECASE)
+_UNVERIFIED_TAG_RE = _re.compile(r"\[CHƯA KIỂM CHỨNG\]", _re.IGNORECASE)
+
+
+def _convert_citation_tags(text: str) -> str:
+    """C4: Convert [nguồn: ...] and [CHƯA KIỂM CHỨNG] to styled HTML spans.
+
+    Applied globally in md_to_html so citation tags render properly in the report.
+    """
+    text = _SOURCE_TAG_RE.sub(
+        lambda m: f'<span class="src-tag" title="Nguồn: {_html.escape(m.group(1))}">'
+                  f'[nguồn: {_html.escape(m.group(1)[:60])}{"…" if len(m.group(1)) > 60 else ""}]</span>',
+        text,
+    )
+    text = _UNVERIFIED_TAG_RE.sub(
+        '<span class="unverified-tag">[CHƯA KIỂM CHỨNG]</span>',
+        text,
+    )
+    return text
+
+
 def md_to_html(text: str) -> str:
-    """Convert markdown text to HTML."""
+    """Convert markdown text to HTML.
+
+    All output (every phase) flows through here, so sentiment markers and table
+    normalisation are applied centrally — no agent text reaches the HTML raw.
+    """
     if not text:
         return ""
+    text = _convert_sentiment_markers(text)   # [TÍCH CỰC] → badge, mọi section (A4)
+    text = _convert_citation_tags(text)        # [nguồn:...] / [CHƯA KIỂM CHỨNG] → spans (C4)
+    text = _normalize_md_tables(text)          # bảng markdown → <table> (A4)
     md = markdown.Markdown(
         extensions=[
             "tables",
@@ -181,6 +278,182 @@ def md_to_html(text: str) -> str:
         ]
     )
     return md.convert(text)
+
+
+# ── News digest enhancers ──────────────────────────────────────────────────
+# Sentiment markers the analyst can emit, mapped to badge class + label
+_SENTIMENT_MAP = {
+    "TÍCH CỰC":  ("sent-bull", "TÍCH CỰC"),
+    "BULLISH":   ("sent-bull", "TÍCH CỰC"),
+    "TIÊU CỰC":  ("sent-bear", "TIÊU CỰC"),
+    "BEARISH":   ("sent-bear", "TIÊU CỰC"),
+    "TRUNG LẬP": ("sent-neu",  "TRUNG LẬP"),
+    "NEUTRAL":   ("sent-neu",  "TRUNG LẬP"),
+}
+_SENT_RE = _re.compile(
+    r"\[\s*(" + "|".join(_re.escape(k) for k in _SENTIMENT_MAP) + r")\s*\]",
+    _re.IGNORECASE,
+)
+# Signed percentage: +12.5% / -3,2%  →  colored green/red
+_SIGNED_PCT_RE = _re.compile(r"(?<![\w])([+\-−])\s?(\d[\d.,]*\s?%)")
+# Neutral numeric highlight: 12.5%, 2.5x, 3,8 lần, 5.234 tỷ, 1.200 đồng
+_NUM_HL_RE = _re.compile(
+    r"(?<![\w.])(\d[\d.,]*\s?(?:%|tỷ|nghìn tỷ|lần|x|đồng|VND|tỉ))(?![\w])",
+    _re.IGNORECASE,
+)
+
+
+def _convert_sentiment_markers(text: str) -> str:
+    """Replace [TÍCH CỰC]/[BULLISH]/... markers with styled HTML badges."""
+    def repl(m):
+        key = m.group(1).upper()
+        cls, label = _SENTIMENT_MAP.get(key, ("sent-neu", key))
+        return f'<span class="sent {cls}">{label}</span>'
+    return _SENT_RE.sub(repl, text)
+
+
+def _highlight_numbers(text: str) -> str:
+    """Wrap financial figures in styled spans for a catchy news digest.
+
+    Runs on markdown text before conversion; python-markdown passes the
+    inline HTML spans through untouched. Skips lines inside markdown tables
+    (pipes) to avoid breaking column alignment.
+    """
+    out_lines = []
+    for line in text.split("\n"):
+        if "|" in line and line.strip().startswith("|"):
+            out_lines.append(line)  # leave tables alone
+            continue
+        line = _SIGNED_PCT_RE.sub(
+            lambda m: (
+                f'<span class="{"num-pos" if m.group(1) in "+" else "num-neg"}">'
+                f'{m.group(1)}{m.group(2)}</span>'
+            ),
+            line,
+        )
+        line = _NUM_HL_RE.sub(lambda m: f'<span class="num-hl">{m.group(1)}</span>', line)
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def enhance_news_digest(text: str) -> str:
+    """Apply sentiment badges + number highlighting to news markdown."""
+    if not text:
+        return text
+    text = _convert_sentiment_markers(text)
+    text = _highlight_numbers(text)
+    return text
+
+
+# ── Report reconciliation validator (A7) ───────────────────────────────────
+# WARN by default (log + banner). Set TRADINGAGENTS_STRICT_VALIDATION=1 to raise
+# and block render when a report fails consistency checks.
+STRICT_VALIDATION = os.getenv("TRADINGAGENTS_STRICT_VALIDATION", "") in ("1", "true", "True")
+
+_PCT_ABSURD_RE = _re.compile(r"([+\-−]?\d[\d.,]*)\s*%")
+_PCT_ABSURD_LIMIT = 500.0  # |%| lớn hơn ngưỡng này gần như chắc là lỗi format (A5/A6)
+
+# D3: Bắt lỗi hướng so sánh multiple (vd "target 12x cao hơn hiện tại 13x" — sai số học)
+# Pattern: số x ... (cao hơn|thấp hơn) ... số x  (khoảng cách tối đa 80 chars mỗi bên)
+_MULTIPLES_CMP_RE = _re.compile(
+    r"(\d[\d.,]+)\s*[xX×]\b[^\n]{0,80}?"
+    r"\b(cao hơn|thấp hơn|higher than|lower than)\b[^\n]{0,80}?"
+    r"(\d[\d.,]+)\s*[xX×]\b",
+    _re.IGNORECASE,
+)
+
+
+def _parse_num_plain(s: str) -> "float | None":
+    """Parse số dạng '12.0', '13,19', '1,250' — dùng locale-aware logic như _pct_magnitude."""
+    s = s.strip()
+    if "." in s and "," in s:
+        s = s.replace(",", "")
+    elif "," in s:
+        # phẩy thập phân VN nếu nhóm cuối ≤2 chữ số
+        if len(s.split(",")[-1]) <= 2:
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _pct_magnitude(raw: str) -> float | None:
+    """Parse a percent token's magnitude, tolerant of cả locale EN lẫn VN.
+
+    Phải phân biệt phẩy thập phân VN ('12,94' = 12.94) với phẩy ngăn nghìn EN
+    ('1,250' = 1250) — nếu không '12,94%' bị hiểu nhầm thành 1294% (false positive).
+    Quy tắc: có cả '.' và ',' → ',' là ngăn nghìn; chỉ có ',' và nhóm cuối ≤2 chữ số
+    → ',' là dấu thập phân; còn lại → ngăn nghìn.
+    """
+    s = raw.replace("−", "-").replace(" ", "")
+    if "." in s and "," in s:
+        s = s.replace(",", "")
+    elif "," in s:
+        if len(s.split(",")[-1]) <= 2:
+            s = s.replace(",", ".", 1).replace(",", "")  # phẩy thập phân VN
+        else:
+            s = s.replace(",", "")                         # phẩy ngăn nghìn
+    try:
+        return abs(float(s))
+    except ValueError:
+        return None
+
+
+def validate_report(sections: dict[str, str], financials: dict | None = None) -> list[str]:
+    """Reconciliation checks chạy trước render (A7). Trả về list cảnh báo.
+
+    Hiện kiểm:
+      - Phần trăm vô lý (|%| > 500) — bắt lỗi giá trị tuyệt đối bị gắn '%'
+        hoặc alpha/growth tính sai (vd '+319.0%').
+    Mở rộng được: thêm assert FCF một chuỗi, net_margin == LNST/DT, ROE/P/B khớp
+    giữa các phase khi đã có parser bảng cho từng phase.
+    """
+    warnings: list[str] = []
+    for key, text in sections.items():
+        if not text:
+            continue
+        # A5/A8: phần trăm vô lý (|%| > 500)
+        for m in _PCT_ABSURD_RE.finditer(text):
+            mag = _pct_magnitude(m.group(1))
+            if mag is not None and mag > _PCT_ABSURD_LIMIT:
+                ctx = text[max(0, m.start() - 30): m.end() + 10].replace("\n", " ")
+                warnings.append(f"[{key}] % vô lý: '{m.group(0).strip()}' (…{ctx.strip()}…)")
+        # D3: hướng so sánh multiple sai số học
+        for m in _MULTIPLES_CMP_RE.finditer(text):
+            n1 = _parse_num_plain(m.group(1))
+            direction = m.group(2).lower()
+            n2 = _parse_num_plain(m.group(3))
+            if n1 is None or n2 is None or n1 == n2:
+                continue
+            up_words   = ("cao hơn", "higher than")
+            down_words = ("thấp hơn", "lower than")
+            wrong = (direction in up_words and n1 < n2) or (direction in down_words and n1 > n2)
+            if wrong:
+                snippet = m.group(0).replace("\n", " ")[:80]
+                warnings.append(
+                    f"[{key}] Multiple direction sai: '{snippet}' "
+                    f"({n1}x không {direction} {n2}x)"
+                )
+    # E2: PM **Rating** field must match what detect_signal extracts for the banner
+    pm_text = sections.get("final_trade_decision", "")
+    if pm_text:
+        _pm_rating_m = _re.search(
+            r'\*\*Rating\*\*\s*:\s*(Buy|Overweight|Hold|Underweight|Sell)',
+            pm_text, _re.IGNORECASE
+        )
+        if _pm_rating_m:
+            _pm_field = _pm_rating_m.group(1).strip().upper()
+            _banner_signal = detect_signal(pm_text)[3].upper()
+            if _banner_signal not in ("PENDING", "UNKNOWN") and _pm_field != _banner_signal:
+                warnings.append(
+                    f"[final_trade_decision] Rating field '{_pm_rating_m.group(1)}' "
+                    f"!= banner signal '{_banner_signal}' — PM text is inconsistent"
+                )
+
+    return warnings
 
 
 def extract_ticker_from_header(text: str) -> str:
@@ -323,6 +596,16 @@ CSS = """
   --accent-green: #10b981;
   --accent-amber: #f59e0b;
   --accent-rose:  #f43f5e;
+  --accent-pink:  #ec4899;
+  --accent-teal:  #14b8a6;
+  --fs-caption: 11px;
+  --fs-small: 13px;
+  --fs-base: 15px;
+  --fs-body: 16px;
+  --fs-lg: 19px;
+  --fs-xl: 23px;
+  --fs-x2: 28px;
+  --fs-display: 46px;
   --radius-sm:    6px;
   --radius-md:    12px;
   --radius-lg:    18px;
@@ -338,9 +621,13 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
-  line-height: 1.65;
-  font-size: 15px;
+  line-height: 1.68;
+  font-size: var(--fs-body);
+  font-feature-settings: 'tnum', 'cv01';
+  -webkit-font-smoothing: antialiased;
 }
+/* Số liệu trong văn bản: tabular figures dễ đọc/căn cột */
+.md-content :is(td, th) { font-variant-numeric: tabular-nums; }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
@@ -362,18 +649,50 @@ body::before {
 
 /* ── Layout ── */
 .wrapper {
-  max-width: 1200px;
+  max-width: 1380px;
   margin: 0 auto;
-  padding: 0 24px 80px;
+  padding: 0 32px 80px;
   position: relative;
   z-index: 1;
 }
 
-/* ── Header ── */
+/* ── Header (full-width signal banner) ── */
 .report-header {
-  padding: 56px 0 40px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 40px;
+  padding: 40px 36px 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  margin-bottom: 36px;
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  position: relative;
+  overflow: hidden;
+}
+.header-left {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+.header-signal-box {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  gap: 3px;
+}
+.header-signal-box .sig-emoji { font-size: var(--fs-x2); line-height: 1; margin-bottom: 4px; }
+.header-signal-box .sig-label-sm { font-size: var(--fs-caption); letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; opacity: 0.85; }
+.header-signal-box .sig-value { font-size: var(--fs-display); font-weight: 900; letter-spacing: -0.01em; line-height: 1; }
+.header-signal-box .sig-date { font-size: var(--fs-small); font-weight: 500; opacity: 0.8; margin-top: 5px; }
+
+@media (max-width: 720px) {
+  .report-header { flex-direction: column; align-items: flex-start; gap: 20px; padding: 28px 22px; }
+  .header-signal-box { align-items: flex-start; text-align: left; }
+  .header-signal-box .sig-value { font-size: var(--fs-display); }
 }
 
 .header-meta {
@@ -384,7 +703,7 @@ body::before {
 }
 
 .header-badge {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -396,7 +715,7 @@ body::before {
 }
 
 .header-date {
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-muted);
   display: flex;
   align-items: center;
@@ -412,7 +731,7 @@ body::before {
 }
 
 .model-chip {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   padding: 3px 9px;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.1);
@@ -427,7 +746,7 @@ body::before {
 }
 
 .cost-chip {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   padding: 3px 9px;
   border-radius: 12px;
   border: 1px solid rgba(34,197,94,0.3);
@@ -449,16 +768,16 @@ body::before {
 }
 
 .ticker-highlight {
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  background: linear-gradient(135deg, #ec4899, #a855f7);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 .report-subtitle {
-  font-size: 16px;
+  font-size: var(--fs-body);
   color: var(--text-secondary);
-  max-width: 600px;
+  max-width: 640px;
 }
 
 /* ── Signal Banner ── */
@@ -483,7 +802,7 @@ body::before {
 }
 
 .signal-emoji {
-  font-size: 48px;
+  font-size: var(--fs-display);
   line-height: 1;
   flex-shrink: 0;
 }
@@ -491,7 +810,7 @@ body::before {
 .signal-info { flex: 1; }
 
 .signal-label-sm {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -500,14 +819,14 @@ body::before {
 }
 
 .signal-value {
-  font-size: 36px;
+  font-size: var(--fs-display);
   font-weight: 900;
   letter-spacing: -0.02em;
   line-height: 1;
 }
 
 .signal-desc {
-  font-size: 13px;
+  font-size: var(--fs-small);
   opacity: 0.65;
   margin-top: 6px;
 }
@@ -521,12 +840,11 @@ body::before {
   overflow: hidden;
   border: 1px solid var(--border);
 }
-
 .workflow-step {
   flex: 1;
   padding: 14px 16px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--fs-small);
   font-weight: 600;
   letter-spacing: 0.04em;
   border-right: 1px solid var(--border);
@@ -536,21 +854,18 @@ body::before {
   cursor: default;
 }
 .workflow-step:last-child { border-right: none; }
-
 .workflow-step.active {
   background: color-mix(in srgb, var(--step-color) 15%, var(--bg-secondary));
 }
-
 .workflow-step .step-num {
   display: block;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   letter-spacing: 0.1em;
   opacity: 0.55;
   text-transform: uppercase;
   margin-bottom: 3px;
 }
-
 .workflow-step .step-name {
   color: var(--text-secondary);
 }
@@ -558,72 +873,61 @@ body::before {
   color: var(--step-color);
 }
 
-/* ── Navigation sidebar ── */
-.layout {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 32px;
-  align-items: start;
-}
-
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
-}
-
-.sidebar {
+/* ── Horizontal sticky top navigation ── */
+.layout { display: block; }
+.topnav {
   position: sticky;
-  top: 24px;
-}
-
-.sidebar-nav {
-  background: var(--bg-card);
+  top: 0;
+  z-index: 50;
+  margin: 0 0 28px;
+  padding: 10px 8px;
+  background: rgba(10,15,30,0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 20px 0;
-  overflow: hidden;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-
-.sidebar-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  padding: 0 20px 12px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
-}
-
+.topnav::-webkit-scrollbar { display: none; }
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 20px;
-  font-size: 13px;
-  font-weight: 500;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: var(--fs-base);
+  font-weight: 600;
   color: var(--text-secondary);
   text-decoration: none;
+  white-space: nowrap;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
   transition: all 0.15s;
-  border-left: 3px solid transparent;
+  flex-shrink: 0;
 }
-
 .nav-item:hover {
   background: var(--bg-card-hover);
   color: var(--text-primary);
-  border-left-color: var(--nav-color, var(--accent-blue));
 }
-
-.nav-item .nav-icon { font-size: 16px; flex-shrink: 0; }
+.nav-item.active {
+  background: color-mix(in srgb, var(--nav-color, var(--accent-blue)) 16%, transparent);
+  color: var(--nav-color, var(--accent-blue));
+  border-color: color-mix(in srgb, var(--nav-color, var(--accent-blue)) 35%, transparent);
+}
+.nav-item .nav-icon { font-size: var(--fs-base); flex-shrink: 0; }
 .nav-item .nav-phase {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   background: rgba(255,255,255,0.07);
   padding: 2px 6px;
   border-radius: 4px;
-  margin-left: auto;
   color: var(--text-muted);
 }
+
+/* Offset anchor jumps so sticky nav doesn't cover section headers */
+.section-card { scroll-margin-top: 80px; }
 
 /* ── Section Cards ── */
 .section-card {
@@ -656,14 +960,14 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: var(--fs-xl);
   flex-shrink: 0;
 }
 
 .card-header-info { flex: 1; }
 
 .card-phase {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -672,14 +976,14 @@ body::before {
 }
 
 .card-title {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1.2;
 }
 
 .card-badge {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   padding: 4px 10px;
   border-radius: 20px;
@@ -702,10 +1006,15 @@ body::before {
   margin: 28px 0 12px;
   color: var(--text-primary);
 }
-.md-content h1 { font-size: 24px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-.md-content h2 { font-size: 20px; }
-.md-content h3 { font-size: 17px; color: var(--text-secondary); }
-.md-content h4 { font-size: 15px; color: var(--text-secondary); }
+.md-content h1 { font-size: var(--fs-x2); border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.md-content h2 {
+  font-size: var(--fs-xl);
+  padding-left: 13px;
+  border-left: 4px solid var(--accent-pink);
+  line-height: 1.3;
+}
+.md-content h3 { font-size: var(--fs-lg); color: #cbd5e1; }
+.md-content h4 { font-size: var(--fs-body); color: var(--text-secondary); }
 
 .md-content p {
   margin: 12px 0;
@@ -740,7 +1049,7 @@ body::before {
 
 .md-content code {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: var(--fs-small);
   background: rgba(59,130,246,0.1);
   color: var(--accent-cyan);
   padding: 2px 7px;
@@ -760,21 +1069,21 @@ body::before {
   background: none;
   color: #e2e8f0;
   padding: 0;
-  font-size: 13px;
+  font-size: var(--fs-small);
 }
 
 .md-content table {
   width: 100%;
   border-collapse: collapse;
   margin: 20px 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .md-content th {
   background: rgba(59,130,246,0.12);
   color: var(--accent-blue);
   font-weight: 600;
-  font-size: 12px;
+  font-size: var(--fs-small);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   padding: 12px 16px;
@@ -797,6 +1106,61 @@ body::before {
   text-decoration: none;
 }
 .md-content a:hover { text-decoration: underline; }
+
+/* ── Number highlighting (news digest) ── */
+.num-hl {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: #fbbf24;
+  background: rgba(251,191,36,0.10);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.num-pos {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #34d399;
+  background: rgba(52,211,153,0.12);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.num-neg {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #f87171;
+  background: rgba(248,113,113,0.12);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+/* ── Sentiment badges ── */
+.sent {
+  display: inline-block;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 9px;
+  border-radius: 20px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border: 1px solid;
+}
+.sent-bull { color: #34d399; background: rgba(52,211,153,0.12); border-color: rgba(52,211,153,0.35); }
+.sent-bear { color: #f87171; background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.35); }
+.sent-neu  { color: #94a3b8; background: rgba(148,163,184,0.10); border-color: rgba(148,163,184,0.30); }
+
+/* ── Fact-check citation tags (C4) ── */
+.src-tag {
+  display: inline-block; font-size: var(--fs-caption); font-weight: 500;
+  padding: 1px 6px; border-radius: 4px; margin: 0 2px;
+  color: #60a5fa; background: rgba(96,165,250,0.10); border: 1px solid rgba(96,165,250,0.30);
+  cursor: help;
+}
+.unverified-tag {
+  display: inline-block; font-size: var(--fs-caption); font-weight: 600;
+  padding: 1px 6px; border-radius: 4px; margin: 0 2px;
+  color: #fb923c; background: rgba(251,146,60,0.12); border: 1px solid rgba(251,146,60,0.35);
+}
 
 .md-content hr {
   border: none;
@@ -827,14 +1191,14 @@ body::before {
 }
 
 .stat-value {
-  font-size: 26px;
+  font-size: var(--fs-x2);
   font-weight: 800;
   letter-spacing: -0.02em;
   margin-bottom: 4px;
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-muted);
   font-weight: 500;
   letter-spacing: 0.04em;
@@ -854,7 +1218,7 @@ body::before {
 }
 
 .footer-brand {
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: var(--text-muted);
   display: flex;
   align-items: center;
@@ -864,7 +1228,7 @@ body::before {
 .footer-brand strong { color: var(--text-secondary); }
 
 .footer-ts {
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
 }
@@ -887,6 +1251,319 @@ body::before {
 .section-card:nth-child(6) { animation-delay: 0.30s; }
 .section-card:nth-child(7) { animation-delay: 0.35s; }
 
+/* ── Hero metrics strip (BSR-style key figures) ── */
+.hero-metrics-wrap { margin: 0 0 26px; }
+.hm-ticker {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.hm-ticker .hm-tk {
+  font-size: var(--fs-xl);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+.hm-ticker .hm-sector {
+  font-size: var(--fs-small);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 14px;
+}
+.hm-card {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 15px 18px 15px 20px;
+  overflow: hidden;
+}
+.hm-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--hm-accent, var(--accent-blue));
+}
+.hm-label {
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 9px;
+}
+.hm-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: var(--fs-x2);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--text-primary);
+  font-feature-settings: 'tnum';
+}
+.hm-value .hm-unit {
+  font-family: 'Inter', sans-serif;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+.hm-sub { font-size: var(--fs-caption); font-weight: 600; margin-top: 8px; }
+.hm-up   { color: #34d399; }
+.hm-down { color: #f87171; }
+.hm-flat { color: var(--text-muted); }
+
+/* ── Executive summary hero (top of report) ── */
+.exec-hero {
+  margin: 0 0 28px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-light);
+  background: linear-gradient(160deg, #101a30 0%, #0c1322 100%);
+  overflow: hidden;
+}
+.exec-hero-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 26px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(59,130,246,0.06);
+}
+.exec-hero-head .eh-icon { font-size: var(--fs-xl); }
+.exec-hero-head .eh-title { font-size: var(--fs-body); font-weight: 800; letter-spacing: -0.01em; }
+.exec-hero-body { padding: 22px 26px; }
+.exec-hero-body .md-content p { margin: 10px 0; }
+.exec-hero-body .md-content ul { margin: 8px 0; }
+
+/* ── Financial summary block (tables + charts) ── */
+.fin-block {
+  margin: 0 0 28px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.fin-block-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 26px;
+  border-bottom: 1px solid var(--border);
+}
+.fin-block-head .fb-icon { font-size: var(--fs-lg); }
+.fin-block-head .fb-title { font-size: var(--fs-body); font-weight: 800; }
+.fin-block-body { padding: 22px 26px; }
+.fin-tables {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+  margin-bottom: 26px;
+}
+@media (min-width: 920px) { .fin-tables { grid-template-columns: 1fr 1fr; } }
+.fin-table-wrap { min-width: 0; overflow-x: auto; }
+.fin-table-wrap h4 {
+  font-size: var(--fs-small);
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  letter-spacing: 0.02em;
+}
+table.fin-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+table.fin-tbl th {
+  background: rgba(59,130,246,0.12);
+  color: var(--accent-blue);
+  font-weight: 600;
+  text-align: right;
+  padding: 7px 10px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0;
+}
+table.fin-tbl th:first-child { text-align: left; }
+table.fin-tbl td {
+  padding: 6px 10px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-secondary);
+}
+table.fin-tbl td:first-child { text-align: left; font-family: 'Inter', sans-serif; color: var(--text-primary); font-weight: 600; }
+table.fin-tbl tr:hover td { background: rgba(255,255,255,0.025); }
+table.fin-tbl td.pos { color: #34d399; }
+table.fin-tbl td.neg { color: #f87171; }
+
+/* ── Interactive charts ── */
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+@media (min-width: 760px) { .charts-grid { grid-template-columns: 1fr 1fr; } }
+.vchart {
+  position: relative;
+  min-width: 0;
+  background: linear-gradient(180deg,#0f1729,#0c1322);
+  border: 1px solid #1c2740;
+  border-radius: 14px;
+  padding: 4px;
+}
+.vchart svg { display: block; width: 100%; height: auto; }
+.vchart-tip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 20;
+  background: rgba(8,12,22,0.96);
+  border: 1px solid #2a3d5a;
+  border-radius: 8px;
+  padding: 8px 11px;
+  font-size: var(--fs-caption);
+  color: #e2e8f0;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.vchart-tip .tip-x { font-weight: 700; margin-bottom: 4px; color: #94a3b8; }
+.vchart-tip .tip-row { display: flex; align-items: center; gap: 7px; line-height: 1.5; }
+.vchart-tip .tip-dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.vchart-tip .tip-val { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+
+/* ── Validator warning banner (A7) ── */
+.validator-banner {
+  margin: 0 0 24px;
+  padding: 14px 20px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(245,158,11,0.45);
+  background: rgba(245,158,11,0.08);
+  color: #fbbf24;
+  font-size: var(--fs-small);
+}
+.validator-banner ul { margin: 8px 0 0 18px; }
+.validator-banner li { margin: 3px 0; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; font-size: var(--fs-small); }
+
+/* ── Technical analysis block (BSR-style) ── */
+.tech-block { margin-bottom: 24px; }
+.tech-score-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 22px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  margin-bottom: 18px;
+}
+.ts-main { flex: 1; min-width: 200px; }
+.ts-label {
+  font-size: var(--fs-caption); font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;
+}
+.ts-score-row { display: flex; align-items: center; gap: 16px; }
+.ts-score { font-size: var(--fs-display); font-weight: 900; line-height: 1; font-family: 'JetBrains Mono', monospace; }
+.ts-score-max { font-size: var(--fs-xl); opacity: 0.55; }
+.ts-pill {
+  font-size: var(--fs-base); font-weight: 800; letter-spacing: 0.04em;
+  padding: 8px 18px; border-radius: 22px; border: 1px solid;
+}
+.ts-note { font-size: var(--fs-small); color: var(--text-secondary); margin-top: 10px; }
+.ts-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 10px;
+  flex: 2;
+  min-width: 260px;
+}
+.ts-metric {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 11px 13px 11px 15px;
+  overflow: hidden;
+}
+.ts-metric::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; background: var(--hm-accent, var(--accent-blue));
+}
+.ts-m-label {
+  font-size: var(--fs-caption); font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 5px;
+}
+.ts-m-value { font-size: var(--fs-lg); font-weight: 800; font-family: 'JetBrains Mono', monospace; line-height: 1; }
+.ts-m-sub { font-size: var(--fs-caption); color: var(--text-muted); margin-top: 4px; }
+.tech-price { margin-bottom: 18px; }
+
+/* ── Agent rating summary table (E3) ── */
+.art-wrap {
+  margin: 0 0 28px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.art-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 26px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(59,130,246,0.06);
+}
+.art-head .art-icon { font-size: var(--fs-xl); }
+.art-head .art-title { font-size: var(--fs-body); font-weight: 800; letter-spacing: -0.01em; flex: 1; }
+.art-body { padding: 18px 26px 22px; }
+table.art-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
+table.art-tbl th {
+  background: rgba(59,130,246,0.10);
+  color: var(--accent-blue);
+  font-weight: 700;
+  font-size: var(--fs-small);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+table.art-tbl td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+table.art-tbl tr:last-child td { border-bottom: none; }
+table.art-tbl tr.art-pm td { background: rgba(236,72,153,0.06); }
+table.art-tbl tr:hover td { background: rgba(255,255,255,0.02); }
+.art-agent { font-weight: 600; color: var(--text-primary); }
+.art-pill {
+  display: inline-block; font-size: var(--fs-small); font-weight: 700;
+  letter-spacing: 0.04em; padding: 3px 10px; border-radius: 12px; border: 1px solid;
+}
+.art-pill-buy       { color: #34d399; background: rgba(52,211,153,0.14); border-color: rgba(52,211,153,0.4); }
+.art-pill-overweight{ color: #86efac; background: rgba(134,239,172,0.14); border-color: rgba(134,239,172,0.4); }
+.art-pill-hold      { color: #fbbf24; background: rgba(251,191,36,0.13); border-color: rgba(251,191,36,0.4); }
+.art-pill-underweight{color: #fca5a5; background: rgba(252,165,165,0.13); border-color: rgba(252,165,165,0.4); }
+.art-pill-sell      { color: #f87171; background: rgba(248,113,113,0.14); border-color: rgba(248,113,113,0.4); }
+.art-pill-missing   { color: var(--text-muted); background: transparent; border-color: var(--border); font-style: italic; }
+.art-role-interim { font-size: var(--fs-caption); color: var(--text-muted); }
+.art-role-final   { font-size: var(--fs-caption); font-weight: 700; color: var(--accent-pink); letter-spacing: 0.04em; }
+.art-override-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-caption); font-weight: 700; letter-spacing: 0.05em;
+  padding: 3px 10px; border-radius: 12px;
+  color: #fbbf24; background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.45);
+  margin-left: 10px;
+}
+
 /* ── Print ── */
 @media print {
   body { background: white; color: black; }
@@ -897,27 +1574,26 @@ body::before {
 """
 
 JS = """
-// Smooth active nav highlighting on scroll
+// Scroll-spy: highlight the active section in the horizontal nav
 const sections = document.querySelectorAll('.section-card[id]');
 const navItems = document.querySelectorAll('.nav-item');
 
-const observer = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-        if (entry.isIntersecting) {
-            const id = entry.target.id;
-            navItems.forEach(item => {
-                item.style.background = '';
-                item.style.color = '';
-                item.style.borderLeftColor = 'transparent';
-                if (item.getAttribute('href') === '#' + id) {
-                    item.style.background = 'rgba(255,255,255,0.05)';
-                    item.style.color = 'var(--text-primary)';
-                    item.style.borderLeftColor = item.dataset.color || '#3b82f6';
-                }
-            });
+function setActive(id) {
+    navItems.forEach(item => {
+        const on = item.getAttribute('href') === '#' + id;
+        item.classList.toggle('active', on);
+        if (on) {
+            // keep the active chip visible in the horizontal scroll strip
+            item.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
         }
     });
-}, { threshold: 0.2, rootMargin: '-10% 0px -60% 0px' });
+}
+
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) setActive(entry.target.id);
+    });
+}, { threshold: 0.1, rootMargin: '-80px 0px -55% 0px' });
 
 sections.forEach(s => observer.observe(s));
 
@@ -937,11 +1613,764 @@ document.querySelectorAll('.stat-value[data-target]').forEach(el => {
     };
     requestAnimationFrame(step);
 });
+
+// ── Interactive bar+line charts (self-contained, no external lib) ──────────
+const SVGNS = 'http://www.w3.org/2000/svg';
+function fmtNum(v, big) {
+    if (v === null || v === undefined || isNaN(v)) return '—';
+    if (big) {
+        const a = Math.abs(v);
+        if (a >= 1000) return (v / 1000).toLocaleString('en-US', {maximumFractionDigits: 1}) + 'K';
+        return v.toLocaleString('en-US', {maximumFractionDigits: 0});
+    }
+    return v.toLocaleString('en-US', {maximumFractionDigits: 2});
+}
+function niceMax(v) {
+    if (v <= 0) return 1;
+    const exp = Math.pow(10, Math.floor(Math.log10(v)));
+    const f = v / exp;
+    let nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+    return nf * exp;
+}
+function el(tag, attrs, parent) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+}
+
+function drawChart(box) {
+    let spec;
+    try { spec = JSON.parse(box.dataset.spec); } catch (e) { return; }
+    box.innerHTML = '';
+    const W = box.clientWidth || 360, H = spec.height || 290;
+    const labels = spec.labels || [];
+    const bars = spec.bars || [], lines = spec.lines || [], bands = spec.bands || [];
+    const bigL = !!spec.bigLeft;
+    const hasRight = !!spec.unitRight || bars.some(b => b.axis === 'right') || lines.some(l => l.axis === 'right');
+    const PAD = {l: 52, r: hasRight ? 46 : 16, t: 42, b: (labels.length > 14 ? 62 : 46)};
+    const iw = W - PAD.l - PAD.r, ih = H - PAD.t - PAD.b;
+    const n = labels.length;
+
+    const leftSeries  = [...bars.filter(b => b.axis !== 'right'), ...lines.filter(l => l.axis !== 'right')];
+    const rightSeries = [...bars.filter(b => b.axis === 'right'), ...lines.filter(l => l.axis === 'right')];
+
+    function bounds(series, opt) {
+        opt = opt || {};
+        if (opt.min != null && opt.max != null) return [opt.min, opt.max];
+        let vals = [];
+        series.forEach(s => (s.data || []).forEach(v => { if (v != null) vals.push(v); }));
+        if (!vals.length) return [0, 1];
+        const dmax = Math.max(...vals), dmin = Math.min(...vals);
+        if (opt.zero === false) {
+            const pad = (dmax - dmin) * 0.10 || Math.abs(dmax) * 0.05 || 1;
+            return [dmin - pad, dmax + pad];
+        }
+        let mx = niceMax(Math.max(Math.abs(dmax), Math.abs(dmin), 1));
+        let mn = Math.min(0, dmin);
+        if (mn < 0) mn = -niceMax(Math.abs(mn));
+        return [mn, mx];
+    }
+    const [lMin, lMax] = bounds(leftSeries, {min: spec.leftMin, max: spec.leftMax, zero: spec.leftZero});
+    const [rMin, rMax] = bounds(rightSeries, {zero: true});
+
+    const ySvg = el('svg', {viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet',
+        'font-family': 'Inter, system-ui, sans-serif'}, box);
+    const yL = v => PAD.t + ih * (1 - (v - lMin) / (lMax - lMin || 1));
+    const yR = v => PAD.t + ih * (1 - (v - rMin) / (rMax - rMin || 1));
+    const band = iw / Math.max(n, 1);
+    const xc = i => PAD.l + band * (i + 0.5);
+
+    // Title
+    if (spec.title) el('text', {x: PAD.l, y: 22, fill: '#e2e8f0', 'font-size': 13,
+        'font-weight': 700}, ySvg).textContent = spec.title;
+    if (spec.unitLeft) el('text', {x: PAD.l, y: 36, fill: '#5b6b85', 'font-size': 11}, ySvg)
+        .textContent = 'đơn vị: ' + spec.unitLeft;
+
+    // Gridlines + Y labels
+    for (let p = 0; p <= 4; p++) {
+        const v = lMin + (lMax - lMin) * p / 4, y = yL(v);
+        el('line', {x1: PAD.l, y1: y, x2: PAD.l + iw, y2: y, stroke: '#1e293b',
+            'stroke-width': 1, 'stroke-dasharray': '3 4'}, ySvg);
+        el('text', {x: PAD.l - 7, y: y + 3.5, 'text-anchor': 'end', fill: '#5b6b85',
+            'font-size': 11}, ySvg).textContent = fmtNum(v, bigL);
+        if (hasRight) {
+            const rv = rMin + (rMax - rMin) * p / 4;
+            el('text', {x: PAD.l + iw + 7, y: y + 3.5, 'text-anchor': 'start', fill: '#7c6a4a',
+                'font-size': 11}, ySvg).textContent = fmtNum(rv, false);
+        }
+    }
+    if (lMin < 0) el('line', {x1: PAD.l, y1: yL(0), x2: PAD.l + iw, y2: yL(0),
+        stroke: '#33455f', 'stroke-width': 1.4}, ySvg);
+
+    // Reference bands (e.g. RSI 30/70)
+    bands.forEach(b => {
+        const y = yL(b.y);
+        el('line', {x1: PAD.l, y1: y, x2: PAD.l + iw, y2: y, stroke: b.color || '#475569',
+            'stroke-width': 1, 'stroke-dasharray': '5 4', opacity: 0.7}, ySvg);
+        if (b.label) el('text', {x: PAD.l + iw - 2, y: y - 4, 'text-anchor': 'end',
+            fill: b.color || '#64748b', 'font-size': 11}, ySvg).textContent = b.label;
+    });
+
+    // Grouped bars (per-series axis aware)
+    const nb = bars.length;
+    const grpW = band * (nb > 1 ? 0.6 : 0.74), barW = grpW / Math.max(nb, 1);
+    bars.forEach((s, si) => {
+        const yf = s.axis === 'right' ? yR : yL;
+        const aMin = s.axis === 'right' ? rMin : lMin;
+        const colors = Array.isArray(s.colors) ? s.colors : null;
+        labels.forEach((_, i) => {
+            const v = s.data[i];
+            if (v == null) return;
+            const bx = xc(i) - grpW / 2 + si * barW;
+            const base = aMin < 0 ? yf(0) : (PAD.t + ih);
+            const yt = yf(v);
+            const hgt = Math.max(1.2, Math.abs(yt - base));
+            const ry = Math.min(yt, base);
+            el('rect', {x: bx + barW * 0.08, y: ry, width: barW * 0.84, height: hgt,
+                rx: nb > 1 ? 3 : 1.5, fill: colors ? colors[i] : s.color,
+                opacity: s.axis === 'right' ? 0.5 : 0.92}, ySvg);
+        });
+    });
+
+    // Lines
+    lines.forEach(s => {
+        const yf = s.axis === 'right' ? yR : yL;
+        const showDots = s.markers === true || (s.markers !== false && n <= 16);
+        let d = '', started = false;
+        const pts = [];
+        labels.forEach((_, i) => {
+            const v = s.data[i];
+            if (v == null) { started = false; return; }
+            const x = xc(i), y = yf(v);
+            d += (started ? ' L' : ' M') + x.toFixed(1) + ' ' + y.toFixed(1);
+            started = true;
+            pts.push([x, y]);
+        });
+        if (d) {
+            const p = el('path', {d: d.trim(), fill: 'none', stroke: s.color,
+                'stroke-width': s.width || 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, ySvg);
+            if (s.dash) p.setAttribute('stroke-dasharray', '6 4');
+        }
+        if (showDots) pts.forEach(([x, y]) => el('circle', {cx: x, cy: y, r: 3.2,
+            fill: '#0c1322', stroke: s.color, 'stroke-width': 2}, ySvg));
+    });
+
+    // X labels (thin out when dense; rotate for readability)
+    const step = Math.max(1, Math.ceil(n / 13));
+    const rot = n > 14;
+    labels.forEach((lab, i) => {
+        if (i % step !== 0 && i !== n - 1) return;
+        const x = xc(i), y = PAD.t + ih + (rot ? 12 : 16);
+        const t = el('text', {x: x, y: y, fill: '#8295b0', 'font-size': 11}, ySvg);
+        if (rot) {
+            t.setAttribute('text-anchor', 'end');
+            t.setAttribute('transform', `rotate(-45 ${x} ${y})`);
+        } else {
+            t.setAttribute('text-anchor', 'middle');
+        }
+        t.textContent = lab;
+    });
+
+    // Legend (top-right)
+    const allS = [...bars.map(b => ({...b, _bar: true})), ...lines];
+    let lx = PAD.l + iw, ly = 14;
+    [...allS].reverse().forEach(s => {
+        const tw = s.name.length * 6.0 + 16;
+        lx -= tw;
+        el('rect', {x: lx, y: ly - 8, width: 10, height: 10, rx: 2, fill: s.color}, ySvg);
+        el('text', {x: lx + 14, y: ly, fill: '#94a3b8', 'font-size': 11}, ySvg).textContent = s.name;
+        lx -= 10;
+    });
+
+    // Hover tooltip
+    const tip = document.createElement('div');
+    tip.className = 'vchart-tip';
+    box.appendChild(tip);
+    const guide = el('line', {x1: 0, y1: PAD.t, x2: 0, y2: PAD.t + ih, stroke: '#3b82f6',
+        'stroke-width': 1, 'stroke-dasharray': '2 3', opacity: 0}, ySvg);
+    labels.forEach((lab, i) => {
+        const hit = el('rect', {x: PAD.l + band * i, y: PAD.t, width: band, height: ih,
+            fill: 'transparent'}, ySvg);
+        hit.style.cursor = 'crosshair';
+        hit.addEventListener('mouseenter', () => {
+            guide.setAttribute('x1', xc(i)); guide.setAttribute('x2', xc(i));
+            guide.setAttribute('opacity', 0.6);
+            let rows = '';
+            allS.forEach(s => {
+                const v = s.data[i];
+                const u = s.axis === 'right' ? (spec.unitRight || '') : (s._bar || s.axis !== 'right' ? (spec.unitLeft || '') : '');
+                rows += `<div class="tip-row"><span class="tip-dot" style="background:${s.color}"></span>`
+                      + `<span>${s.name}</span><span class="tip-val">${fmtNum(v, bigL && s._bar)}</span></div>`;
+            });
+            tip.innerHTML = `<div class="tip-x">${lab}</div>${rows}`;
+            tip.style.opacity = 1;
+            const px = (xc(i) / W) * box.clientWidth;
+            tip.style.left = Math.min(box.clientWidth - 150, Math.max(4, px + 10)) + 'px';
+            tip.style.top = '38px';
+        });
+        hit.addEventListener('mouseleave', () => {
+            tip.style.opacity = 0; guide.setAttribute('opacity', 0);
+        });
+    });
+}
+
+function drawAllCharts() { document.querySelectorAll('.vchart[data-spec]').forEach(drawChart); }
+let _crt;
+window.addEventListener('resize', () => { clearTimeout(_crt); _crt = setTimeout(drawAllCharts, 150); });
+drawAllCharts();
 """
 
 
+import html as _html
+
+# Heading that opens the executive-summary block inside fundamentals_report
+_EXEC_RE = re.compile(
+    r"(^#{1,3}\s*📋[^\n]*\n.*?)(?=^#{1,3}\s|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def _extract_executive_summary(md: str) -> tuple[str, str]:
+    """Pull the '📋 Tóm Tắt Đầu Tư' block out of fundamentals markdown.
+    Returns (exec_block_md, remaining_md). Empty exec_block if not found."""
+    if not md:
+        return "", md
+    m = _EXEC_RE.search(md)
+    if not m:
+        return "", md
+    block = m.group(1).strip()
+    # Drop the leading heading line itself — we render our own hero header
+    block = re.sub(r"^#{1,3}\s*📋[^\n]*\n", "", block, count=1).strip()
+    remaining = (md[:m.start()] + md[m.end():]).strip()
+    return block, remaining
+
+
+def _fnum(v, dec=1) -> str:
+    if v is None:
+        return "—"
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if dec == 0:
+        return f"{v:,.0f}"
+    return f"{v:,.{dec}f}"
+
+
+def _spec_attr(spec: dict) -> str:
+    """JSON spec → safe double-quoted HTML attribute."""
+    return _html.escape(json.dumps(spec, ensure_ascii=False), quote=True)
+
+
+def _build_hero_metrics(chart_data: dict, ticker: str) -> str:
+    """BSR-style hero strip: Giá · P/E · P/B · ROE · LNST với số monospace,
+    descriptor và mũi tên xanh/đỏ. '' nếu không đủ dữ liệu."""
+    if not chart_data:
+        return ""
+
+    is_bank = chart_data.get("is_bank", False)
+    years   = chart_data.get("years", []) or []
+    price   = chart_data.get("latest_price")
+    pe      = [v for v in (chart_data.get("pe") or [])]
+    pb      = [v for v in (chart_data.get("pb") or [])]
+    roe     = chart_data.get("roe_pct") or []
+    npf     = chart_data.get("netprofit_bn") or []
+
+    def last(lst):
+        for v in reversed(lst):
+            if v is not None:
+                return v
+        return None
+
+    def median(lst):
+        xs = sorted(v for v in lst if v is not None)
+        if not xs:
+            return None
+        m = len(xs) // 2
+        return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+    cards = []
+
+    def card(label, value, unit="", sub="", sub_cls="hm-flat", accent="#3b82f6"):
+        unit_html = f'<span class="hm-unit">{unit}</span>' if unit else ""
+        sub_html = f'<div class="hm-sub {sub_cls}">{sub}</div>' if sub else ""
+        cards.append(
+            f'<div class="hm-card" style="--hm-accent:{accent}">'
+            f'<div class="hm-label">{label}</div>'
+            f'<div class="hm-value">{value}{unit_html}</div>'
+            f'{sub_html}</div>'
+        )
+
+    # Giá hiện tại
+    if price is not None:
+        card("Giá hiện tại", f"{price:,.1f}", "nghìn đ", accent="#3b82f6")
+
+    # P/E
+    pe_l, pe_med = last(pe), median(pe)
+    if pe_l is not None:
+        if pe_med and pe_l > pe_med * 1.1:
+            sub, cls = "▲ Cao hơn TB 5N", "hm-down"
+        elif pe_med and pe_l < pe_med * 0.9:
+            sub, cls = "▼ Thấp hơn TB 5N", "hm-up"
+        else:
+            sub, cls = "◆ Quanh TB 5N", "hm-flat"
+        card("P/E (TTM)", f"{pe_l:,.1f}", "x", sub, cls, accent="#a855f7")
+
+    # P/B
+    pb_l = last(pb)
+    if pb_l is not None:
+        yr = years[-1] if years else ""
+        card(f"P/B {yr}", f"{pb_l:,.2f}", "x", "", "hm-flat", accent="#06b6d4")
+
+    # ROE + xu hướng
+    roe_l = last(roe)
+    if roe_l is not None:
+        roe_prev = None
+        vals = [v for v in roe if v is not None]
+        if len(vals) >= 2:
+            roe_prev = vals[-2]
+        if roe_prev is not None and roe_l > roe_prev + 0.3:
+            sub, cls = f"↑ phục hồi từ {roe_prev:.1f}%", "hm-up"
+        elif roe_prev is not None and roe_l < roe_prev - 0.3:
+            sub, cls = f"↓ giảm từ {roe_prev:.1f}%", "hm-down"
+        else:
+            sub, cls = "→ đi ngang", "hm-flat"
+        card("ROE", f"{roe_l:,.1f}", "%", sub, cls, accent="#10b981")
+
+    # LNST năm gần nhất + YoY
+    npf_l = last(npf)
+    if npf_l is not None:
+        vals = [v for v in npf if v is not None]
+        yoy = ""
+        cls = "hm-flat"
+        if len(vals) >= 2 and vals[-2]:
+            ch = (vals[-1] - vals[-2]) / abs(vals[-2]) * 100
+            if ch >= 0:
+                yoy, cls = f"↑ +{ch:,.0f}% YoY", "hm-up"
+            else:
+                yoy, cls = f"↓ {ch:,.0f}% YoY", "hm-down"
+        yr = years[-1] if years else ""
+        card(f"LNST {yr}", f"{npf_l:,.0f}", "tỷ", yoy, cls, accent="#22c55e")
+
+    if len(cards) < 2:
+        return ""
+
+    sector = "Ngân hàng" if is_bank else "Doanh nghiệp"
+    return (
+        '<section class="hero-metrics-wrap">'
+        f'<div class="hm-ticker"><span class="hm-tk">{ticker}</span>'
+        f'<span class="hm-sector">{sector} · cập nhật {years[-1] if years else ""}</span></div>'
+        f'<div class="hero-metrics">{"".join(cards)}</div>'
+        '</section>'
+    )
+
+
+def _build_financial_block(chart_data: dict) -> str:
+    """Build the top financial summary: 5Y + quarterly tables + interactive
+    bar/line charts. Returns '' if there is no usable data."""
+    if not chart_data:
+        return ""
+
+    is_bank = chart_data.get("is_bank", False)
+    years   = chart_data.get("years", []) or []
+    rev     = chart_data.get("revenue_bn", []) or []
+    npf     = chart_data.get("netprofit_bn", []) or []
+    pe      = chart_data.get("pe", []) or []
+    pb      = chart_data.get("pb", []) or []
+    roe     = chart_data.get("roe_pct", []) or []
+    roa     = chart_data.get("roa_pct", []) or []
+    nim     = chart_data.get("nim_pct", []) or []
+    npl     = chart_data.get("npl_pct", []) or []
+    quarters = chart_data.get("quarters", []) or []
+    q_rev    = chart_data.get("q_revenue_bn", []) or []
+    q_pf     = chart_data.get("q_profit_bn", []) or []
+
+    if not years and not quarters:
+        return ""
+
+    def g(lst, i):
+        return lst[i] if i < len(lst) and lst[i] is not None else None
+
+    # Net margin (computed) — annual & quarterly
+    def margin(rv, pf):
+        out = []
+        for a, b in zip(rv, pf):
+            out.append(round(b / a * 100, 1) if (a and b is not None and a != 0) else None)
+        return out
+    a_margin = margin(rev, npf)
+    q_margin = margin(q_rev, q_pf)
+
+    # ── Tables ──────────────────────────────────────────────────────────
+    rev_lbl = "Tổng TN" if is_bank else "Doanh thu"
+    yr_rows = ""
+    for i, y in enumerate(years):
+        if is_bank:
+            yr_rows += (
+                f"<tr><td>{y}</td>"
+                f"<td>{_fnum(g(npf,i),0)}</td>"
+                f"<td>{_fnum(g(roe,i))}</td>"
+                f"<td>{_fnum(g(roa,i),2)}</td>"
+                f"<td>{_fnum(g(nim,i),2)}</td>"
+                f"<td>{_fnum(g(npl,i),2)}</td>"
+                f"<td>{_fnum(g(pe,i),1)}</td>"
+                f"<td>{_fnum(g(pb,i),2)}</td></tr>"
+            )
+        else:
+            yr_rows += (
+                f"<tr><td>{y}</td>"
+                f"<td>{_fnum(g(rev,i),0)}</td>"
+                f"<td>{_fnum(g(npf,i),0)}</td>"
+                f"<td>{_fnum(g(a_margin,i))}</td>"
+                f"<td>{_fnum(g(roe,i))}</td>"
+                f"<td>{_fnum(g(roa,i),2)}</td>"
+                f"<td>{_fnum(g(pe,i),1)}</td>"
+                f"<td>{_fnum(g(pb,i),2)}</td></tr>"
+            )
+    if is_bank:
+        yr_head = "<tr><th>Năm</th><th>LNST</th><th>ROE</th><th>ROA</th><th>NIM</th><th>NPL</th><th>P/E</th><th>P/B</th></tr>"
+    else:
+        yr_head = f"<tr><th>Năm</th><th>{rev_lbl}</th><th>LNST</th><th>Biên LN</th><th>ROE</th><th>ROA</th><th>P/E</th><th>P/B</th></tr>"
+
+    q_rows = ""
+    for i, q in enumerate(quarters):
+        q_rows += (
+            f"<tr><td>{q}</td>"
+            f"<td>{_fnum(g(q_rev,i),0)}</td>"
+            f"<td>{_fnum(g(q_pf,i),0)}</td>"
+            f"<td>{_fnum(g(q_margin,i))}</td></tr>"
+        )
+    q_head = f"<tr><th>Quý</th><th>{rev_lbl}</th><th>LNST</th><th>Biên LN</th></tr>"
+
+    tables_html = ""
+    if yr_rows:
+        tables_html += (
+            f'<div class="fin-table-wrap"><h4>Kết quả tài chính · {len(years)} năm '
+            '<span style="font-weight:400;color:var(--text-muted)">(tỷ đồng · %)</span></h4>'
+            f'<table class="fin-tbl"><thead>{yr_head}</thead><tbody>{yr_rows}</tbody></table></div>'
+        )
+    if q_rows:
+        tables_html += (
+            f'<div class="fin-table-wrap"><h4>Kết quả theo quý · {len(quarters)} quý '
+            '<span style="font-weight:400;color:var(--text-muted)">(tỷ đồng · %)</span></h4>'
+            f'<table class="fin-tbl"><thead>{q_head}</thead><tbody>{q_rows}</tbody></table></div>'
+        )
+
+    # ── Charts (bar + line combo, BSR-like colors) ──────────────────────
+    specs: list[dict] = []
+    if years and any(v is not None for v in rev):
+        specs.append({
+            "title": f"{rev_lbl} & LNST · {len(years)} năm",
+            "labels": years, "unitLeft": "tỷ đồng", "unitRight": "%", "bigLeft": True,
+            "bars": [
+                {"name": rev_lbl, "data": rev, "color": "#3b82f6"},
+                {"name": "LNST",  "data": npf, "color": "#22c55e"},
+            ],
+            "lines": [{"name": "Biên LN", "data": a_margin, "color": "#f59e0b", "axis": "right"}],
+        })
+    if is_bank and years and any(v is not None for v in nim):
+        specs.append({
+            "title": f"NIM & NPL · {len(years)} năm",
+            "labels": years, "unitLeft": "%",
+            "bars": [], "lines": [
+                {"name": "NIM", "data": nim, "color": "#f59e0b"},
+                {"name": "NPL", "data": npl, "color": "#f43f5e"},
+            ],
+        })
+    elif years and any(v is not None for v in pe):
+        specs.append({
+            "title": f"Định giá P/E & P/B · {len(years)} năm",
+            "labels": years, "unitLeft": "lần",
+            "bars": [], "lines": [
+                {"name": "P/E", "data": pe, "color": "#a855f7"},
+                {"name": "P/B", "data": pb, "color": "#06b6d4"},
+            ],
+        })
+    if years and any(v is not None for v in roe):
+        specs.append({
+            "title": f"Hiệu quả sinh lời ROE & ROA · {len(years)} năm",
+            "labels": years, "unitLeft": "%",
+            "bars": [], "lines": [
+                {"name": "ROE", "data": roe, "color": "#10b981"},
+                {"name": "ROA", "data": roa, "color": "#38bdf8"},
+            ],
+        })
+    if quarters and any(v is not None for v in q_rev):
+        specs.append({
+            "title": f"Xu hướng theo quý · {len(quarters)} quý",
+            "labels": quarters, "unitLeft": "tỷ đồng", "unitRight": "%", "bigLeft": True,
+            "bars": [
+                {"name": rev_lbl, "data": q_rev, "color": "#3b82f6"},
+                {"name": "LNST",  "data": q_pf,  "color": "#22c55e"},
+            ],
+            "lines": [{"name": "Biên LN", "data": q_margin, "color": "#f59e0b", "axis": "right"}],
+        })
+
+    charts_html = ""
+    if specs:
+        cells = "".join(f'<div class="vchart" data-spec="{_spec_attr(s)}"></div>' for s in specs)
+        charts_html = f'<div class="charts-grid">{cells}</div>'
+
+    if not tables_html and not charts_html:
+        return ""
+
+    return (
+        '<section class="fin-block">'
+        '<div class="fin-block-head"><span class="fb-icon">📊</span>'
+        '<span class="fb-title">Tổng Hợp Kết Quả Tài Chính</span></div>'
+        '<div class="fin-block-body">'
+        f'<div class="fin-tables">{tables_html}</div>'
+        f'{charts_html}'
+        '</div></section>'
+    )
+
+
+def _build_technical_block(td: dict) -> str:
+    """BSR-style technical section: score card + price/volume/MA chart, RSI, correlation."""
+    if not td or not td.get("weeks"):
+        return ""
+
+    weeks = td["weeks"]
+    sym = td.get("symbol", "")
+    score = td.get("score", 0)
+    smax = td.get("score_max", 6)
+    scolor = td.get("signal_color", "#94a3b8")
+    signal = td.get("signal", "—")
+
+    def cls_for(v, good_high=True):
+        if v is None:
+            return "hm-flat"
+        return ("hm-up" if (v >= 0) == good_high else "hm-down")
+
+    # ── Score card + metric mini-cards ──────────────────────────────────
+    rsi = td.get("rsi")
+    rsi_lbl = td.get("rsi_label", "")
+    rsi_cls = "hm-down" if rsi_lbl in ("QUÁ MUA", "TIÊU CỰC") else "hm-up" if rsi_lbl in ("TÍCH CỰC", "QUÁ BÁN") else "hm-flat"
+    macd_trend = td.get("macd_trend", "")
+    macd_cls = "hm-up" if macd_trend == "TÍCH CỰC" else "hm-down"
+    perf = td.get("perf_1y")
+    perf_vni = td.get("perf_vni")
+    beta = td.get("beta")
+    alpha = td.get("alpha")
+
+    def metric(label, value, sub, vcls, accent):
+        return (
+            f'<div class="ts-metric" style="--hm-accent:{accent}">'
+            f'<div class="ts-m-label">{label}</div>'
+            f'<div class="ts-m-value {vcls}">{value}</div>'
+            f'<div class="ts-m-sub">{sub}</div></div>'
+        )
+
+    metrics = ""
+    if rsi is not None:
+        metrics += metric("RSI 14", f"{rsi:.1f}", rsi_lbl, rsi_cls, "#a855f7")
+    if macd_trend:
+        metrics += metric("MACD", macd_trend, f"Hist {td.get('macd_hist','')}", macd_cls, "#f43f5e")
+    if perf is not None:
+        sub = f"vs VNINDEX {perf_vni:+.0f}%" if perf_vni is not None else ""
+        metrics += metric("1 năm", f"{perf:+.0f}%", sub, cls_for(perf), "#14b8a6")
+    if beta is not None:
+        sub = f"Alpha {alpha:+.0f}%" if alpha is not None else ""
+        metrics += metric("Beta vs VNI", f"{beta:.2f}", sub, "hm-flat", "#f59e0b")
+
+    note = td.get("note", "")
+    score_card = (
+        '<div class="tech-score-card">'
+        '<div class="ts-main">'
+        '<div class="ts-label">Technical Score</div>'
+        '<div class="ts-score-row">'
+        f'<span class="ts-score" style="color:{scolor}">{score}<span class="ts-score-max">/{smax}</span></span>'
+        f'<span class="ts-pill" style="color:{scolor}; border-color:{scolor}; '
+        f'background:color-mix(in srgb,{scolor} 16%,transparent)">{signal}</span>'
+        '</div>'
+        f'<div class="ts-note">{note}</div>'
+        '</div>'
+        f'<div class="ts-metrics">{metrics}</div>'
+        '</div>'
+    )
+
+    # ── Charts ──────────────────────────────────────────────────────────
+    vol = td.get("volume", [])
+    vol_up = td.get("vol_up", [])
+    vol_colors = ["#14b8a6" if (i < len(vol_up) and vol_up[i]) else "#fb7185" for i in range(len(vol))]
+
+    price_lines = [
+        {"name": "Giá", "data": td.get("close", []), "color": "#ec4899", "markers": False, "width": 2.6},
+    ]
+    if any(v is not None for v in td.get("ma10", [])):
+        price_lines.append({"name": "MA10", "data": td.get("ma10", []), "color": "#38bdf8", "markers": False, "width": 1.5})
+    price_lines.append({"name": "MA20", "data": td.get("ma20", []), "color": "#a855f7", "markers": False, "dash": True, "width": 1.8})
+    if any(v is not None for v in td.get("ma50", [])):
+        price_lines.append({"name": "MA50", "data": td.get("ma50", []), "color": "#f59e0b", "markers": False, "width": 1.5})
+
+    price_spec = {
+        "title": f"Biểu đồ giá 52 tuần · Giá + Volume + MA10/20/50",
+        "height": 360, "labels": weeks,
+        "unitLeft": "nghìn đ", "unitRight": "triệu CP", "leftZero": False,
+        "bars": [{"name": "Volume", "data": vol, "axis": "right", "color": "#14b8a6", "colors": vol_colors}],
+        "lines": price_lines,
+    }
+    # MACD histogram colors (xanh dương / đỏ theo dấu)
+    macdh = td.get("macd_hist_series", [])
+    macdh_colors = ["#22c55e" if (v is not None and v >= 0) else "#f43f5e" for v in macdh]
+    rsi_spec = {
+        "title": "RSI (14) & MACD histogram", "labels": weeks,
+        "leftMin": 0, "leftMax": 100, "unitRight": "MACD",
+        "bands": [
+            {"y": 70, "color": "#f43f5e", "label": "70 · quá mua"},
+            {"y": 30, "color": "#22c55e", "label": "30 · quá bán"},
+        ],
+        "bars": [{"name": "MACD hist", "data": macdh, "axis": "right", "color": "#64748b", "colors": macdh_colors}],
+        "lines": [{"name": "RSI", "data": td.get("rsi_series", []), "color": "#ec4899", "markers": False, "width": 2.4}],
+    }
+    corr_spec = {
+        "title": "Tương quan vs VNINDEX & VN30", "labels": weeks,
+        "unitLeft": "chuẩn hoá 100", "leftZero": False,
+        "lines": [
+            {"name": sym, "data": td.get("tkr_norm", []), "color": "#ec4899", "markers": False, "width": 2.6},
+            {"name": "VNINDEX", "data": td.get("vni_norm", []), "color": "#06b6d4", "markers": False, "width": 2},
+            {"name": "VN30", "data": td.get("vn30_norm", []), "color": "#a855f7", "markers": False, "width": 2, "dash": True},
+        ],
+    }
+
+    price_html = f'<div class="vchart" data-spec="{_spec_attr(price_spec)}"></div>'
+    grid_html = (
+        '<div class="charts-grid">'
+        f'<div class="vchart" data-spec="{_spec_attr(rsi_spec)}"></div>'
+        f'<div class="vchart" data-spec="{_spec_attr(corr_spec)}"></div>'
+        '</div>'
+    )
+
+    return (
+        '<div class="tech-block">'
+        f'{score_card}'
+        f'<div class="tech-price">{price_html}</div>'
+        f'{grid_html}'
+        '</div>'
+    )
+
+
+_RATING_RE = {
+    "investment_plan":        _re.compile(r'\*\*Recommendation\*\*\s*:\s*(Buy|Overweight|Hold|Underweight|Sell)', _re.IGNORECASE),
+    "trader_investment_plan": _re.compile(r'\*\*Action\*\*\s*:\s*(Buy|Hold|Sell)', _re.IGNORECASE),
+    "final_trade_decision":   _re.compile(r'\*\*Rating\*\*\s*:\s*(Buy|Overweight|Hold|Underweight|Sell)', _re.IGNORECASE),
+}
+
+_PILL_CLS = {
+    "buy": "art-pill-buy",
+    "overweight": "art-pill-overweight",
+    "hold": "art-pill-hold",
+    "underweight": "art-pill-underweight",
+    "sell": "art-pill-sell",
+}
+
+def _rating_pill(value: str | None) -> str:
+    """Return a styled <span> for a rating value, or 'chưa có dữ liệu'."""
+    if not value:
+        return '<span class="art-pill art-pill-missing">chưa có dữ liệu</span>'
+    cls = _PILL_CLS.get(value.lower(), "art-pill-hold")
+    return f'<span class="art-pill {cls}">{_html.escape(value)}</span>'
+
+
+def _rating_direction(r: str | None) -> str | None:
+    if not r:
+        return None
+    r = r.strip().upper()
+    if r in ("BUY", "OVERWEIGHT"):
+        return "positive"
+    if r in ("SELL", "UNDERWEIGHT"):
+        return "negative"
+    if r == "HOLD":
+        return "neutral"
+    return None
+
+
+def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | None) -> str:
+    """E3: build the agent-rating summary table HTML.
+
+    Phase-I ratings come from `agent_ratings` dict (structured extraction result).
+    None → "chưa có dữ liệu". NO heuristic fallback.
+    Phase-II/III/V ratings come from reliable structured-output header lines.
+    """
+    ar = agent_ratings or {}
+
+    # Phase-I: structured extraction (no regex fallback on None)
+    market_r  = ar.get("market")       # str | None
+    news_r    = ar.get("news")         # str | None
+    funds_r   = ar.get("fundamentals") # str | None
+
+    # Phase-II/III/V: parse guaranteed structured output headers
+    def _extract(key):
+        text = sections.get(key, "")
+        if not text:
+            return None
+        m = _RATING_RE.get(key, _re.compile(r"(?!x)x")).search(text)
+        return m.group(1) if m else None
+
+    rm_r     = _extract("investment_plan")
+    trader_r = _extract("trader_investment_plan")
+    pm_r     = _extract("final_trade_decision")
+
+    # PM override đa số: normalize to direction, check if PM disagrees with ≥3 of the 5 others
+    others = [market_r, news_r, funds_r, rm_r, trader_r]
+    pm_dir = _rating_direction(pm_r)
+    override_badge = ""
+    if pm_dir is not None:
+        disagree = sum(
+            1 for r in others
+            if _rating_direction(r) is not None and _rating_direction(r) != pm_dir
+        )
+        if disagree >= 3:
+            override_badge = (
+                f'<span class="art-override-badge">⚠ PM override đa số ({disagree}/5)</span>'
+            )
+
+    rows = [
+        ("📈", "Market Analyst",        market_r,  False),
+        ("📰", "News Analyst",          news_r,    False),
+        ("🏦", "Fundamentals Analyst",  funds_r,   False),
+        ("🔬", "Research Manager",      rm_r,      False),
+        ("⚡", "Trader",               trader_r,  False),
+        ("🎯", "Portfolio Manager",     pm_r,      True),
+    ]
+
+    tbody = ""
+    for icon, name, rating, is_pm in rows:
+        tr_cls = ' class="art-pm"' if is_pm else ""
+        role_html = (
+            '<span class="art-role-final">Final Signal</span>'
+            if is_pm else
+            '<span class="art-role-interim">Đề xuất tạm</span>'
+        )
+        tbody += (
+            f"<tr{tr_cls}>"
+            f"<td><span class='art-agent'>{icon} {_html.escape(name)}</span></td>"
+            f"<td>{_rating_pill(rating)}</td>"
+            f"<td>{role_html}</td>"
+            "</tr>\n"
+        )
+
+    return (
+        '<section class="art-wrap">'
+        '<div class="art-head">'
+        '<span class="art-icon">🗳</span>'
+        '<span class="art-title">Tổng Hợp Khuyến Nghị Toàn Pipeline</span>'
+        f'{override_badge}'
+        '</div>'
+        '<div class="art-body">'
+        '<table class="art-tbl"><thead>'
+        '<tr><th>Agent</th><th>Khuyến nghị</th><th>Vai trò</th></tr>'
+        '</thead><tbody>'
+        f'{tbody}'
+        '</tbody></table>'
+        '</div>'
+        '</section>'
+    )
+
+
 def build_html(ticker: str, analysis_date: str, sections: dict[str, str], generated_at: str,
-               model_info: dict | None = None, cost_str: str | None = None) -> str:
+               model_info: dict | None = None, cost_str: str | None = None,
+               agent_ratings: dict | None = None) -> str:
     """Build the complete HTML report string."""
 
     # Count sections present
@@ -955,6 +2384,53 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
     signal_emoji, signal_fg, signal_bg, signal_label = "⚪", "#6b7280", "#1f2937", "PENDING"
     if sections.get("final_trade_decision"):
         signal_emoji, signal_fg, signal_bg, signal_label = detect_signal(sections["final_trade_decision"])
+
+    # E3: Agent rating summary table (Phase-I from agent_ratings, Phase-II/III/V from text)
+    agent_rating_table_html = _build_agent_rating_table(sections, agent_ratings)
+
+    # ── Pre-process fundamentals: lift chart data + executive summary to top ──
+    work_sections = dict(sections)
+    fin_chart_data: dict = {}
+    exec_hero_html = ""
+    if work_sections.get("fundamentals_report"):
+        _f = work_sections["fundamentals_report"]
+        _f, fin_chart_data = _extract_vn_chart_data(_f)
+        _exec_md, _f = _extract_executive_summary(_f)
+        work_sections["fundamentals_report"] = _f
+        if _exec_md:
+            exec_hero_html = (
+                '<section class="exec-hero">'
+                '<div class="exec-hero-head"><span class="eh-icon">📋</span>'
+                '<span class="eh-title">Tóm Tắt Đầu Tư</span></div>'
+                f'<div class="exec-hero-body"><div class="md-content">{md_to_html(_exec_md)}</div></div>'
+                '</section>'
+            )
+    fin_block_html = _build_financial_block(fin_chart_data)
+    hero_metrics_html = _build_hero_metrics(fin_chart_data, ticker)
+
+    # ── Pre-process market report: lift technical chart data ──────────────
+    pre_charts: dict[str, str] = {}
+    if work_sections.get("market_report"):
+        _m, _tech = _extract_vn_tech_data(work_sections["market_report"])
+        work_sections["market_report"] = _m
+        tech_html = _build_technical_block(_tech)
+        if tech_html:
+            pre_charts["market_report"] = tech_html
+
+    # ── Reconciliation validator (A7/A8) ──────────────────────────────────
+    # Gate (block + regenerate) sống ở main.py; build_html chỉ render banner
+    # cảnh báo (chỉ hiện khi vào dev/warn mode, vì production đã chặn trước render).
+    _val_warnings = validate_report(work_sections, fin_chart_data)
+    if _val_warnings:
+        print("[validate_report] %d cảnh báo:\n  - %s" % (
+            len(_val_warnings), "\n  - ".join(_val_warnings)), file=sys.stderr)
+    validator_banner = ""
+    if _val_warnings:
+        _items = "".join(f"<li>{_inline_md(w)}</li>" for w in _val_warnings[:12])  # A9
+        validator_banner = (
+            '<div class="validator-banner"><strong>⚠ Cảnh báo nhất quán dữ liệu '
+            f'({len(_val_warnings)})</strong><ul>{_items}</ul></div>'
+        )
 
     # ── Workflow bar ──────────────────────────────────────────────
     phases = [("I", "Analyst Team"), ("II", "Research Team"), ("III", "Trader"),
@@ -973,9 +2449,9 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
         )
     workflow_html += '</div>'
 
-    # ── Sidebar nav ───────────────────────────────────────────────
-    nav_html = '<div class="sidebar-nav"><div class="sidebar-title">Sections</div>'
-    for key, content in sections.items():
+    # ── Horizontal sticky nav ─────────────────────────────────────
+    nav_html = '<nav class="topnav">'
+    for key, content in work_sections.items():
         if not content or key not in SECTION_META:
             continue
         meta = SECTION_META[key]
@@ -987,14 +2463,22 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
             f'<span class="nav-phase">{meta["phase"]}</span>'
             f'</a>'
         )
-    nav_html += '</div>'
+    nav_html += '</nav>'
 
     # ── Section cards ─────────────────────────────────────────────
     cards_html = ""
-    for key, content in sections.items():
+    for key, content in work_sections.items():
         if not content or key not in SECTION_META:
             continue
         meta = SECTION_META[key]
+
+        # Pre-built charts (e.g. market technical block); fundamentals charts lifted to top
+        charts_block = pre_charts.get(key, "")
+
+        # News digest: highlight numbers + sentiment badges
+        if key == "news_report":
+            content = enhance_news_digest(content)
+
         body_html = md_to_html(content)
 
         # Icon background gradient
@@ -1017,6 +2501,7 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
     <div class="card-badge" style="{badge_style}">{meta['badge']}</div>
   </div>
   <div class="card-body">
+    {charts_block}
     <div class="md-content">{body_html}</div>
   </div>
 </div>
@@ -1086,39 +2571,46 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
 <div class="wrapper">
 
   <!-- Header -->
-  <header class="report-header">
-    <div class="header-meta">
-      <span class="header-badge">TradingAgents AI</span>
-      <span class="header-date">🕐 Generated {generated_at}</span>
+  <header class="report-header" style="border-color: color-mix(in srgb, {signal_fg} 34%, var(--border)); background: linear-gradient(90deg, var(--bg-card) 0%, var(--bg-card) 30%, color-mix(in srgb, {signal_fg} 26%, var(--bg-card)) 100%);">
+    <div class="header-left">
+      <div class="header-meta">
+        <span class="header-badge">TradingAgents AI</span>
+        <span class="header-date">🕐 Generated {generated_at}</span>
+      </div>
+      {model_info_html}
+      <h1 class="report-title">
+        <span class="ticker-highlight">{ticker}</span> Investment Report
+      </h1>
+      <p class="report-subtitle">
+        Multi-agent LLM analysis covering market technicals, fundamentals, news sentiment,
+        bull/bear debate, risk management and portfolio decision.
+      </p>
     </div>
-    {model_info_html}
-    <h1 class="report-title">
-      <span class="ticker-highlight">{ticker}</span> Investment Report
-    </h1>
-    <p class="report-subtitle">
-      Multi-agent LLM analysis covering market technicals, fundamentals, news sentiment,
-      bull/bear debate, risk management and portfolio decision.
-    </p>
+    <div class="header-signal-box" style="color:{signal_fg};">
+      <div class="sig-emoji">{signal_emoji}</div>
+      <div class="sig-label-sm">Final Signal</div>
+      <div class="sig-value">{signal_label}</div>
+      <div class="sig-date">{analysis_date}</div>
+    </div>
   </header>
-
-  <!-- Signal Banner -->
-  {signal_banner}
-
-  <!-- Stats Bar -->
-  {stats_bar}
 
   <!-- Workflow -->
   {workflow_html}
 
-  <!-- Main layout -->
-  <div class="layout">
-    <aside class="sidebar">
-      {nav_html}
-    </aside>
-    <main>
-      {cards_html}
-    </main>
-  </div>
+  <!-- Sticky section nav -->
+  {nav_html}
+
+  <!-- Hero key metrics + executive summary + financial snapshot (top of report) -->
+  {validator_banner}
+  {hero_metrics_html}
+  {exec_hero_html}
+  {agent_rating_table_html}
+  {fin_block_html}
+
+  <!-- Main content -->
+  <main>
+    {cards_html}
+  </main>
 
   <!-- Footer -->
   <footer class="report-footer">

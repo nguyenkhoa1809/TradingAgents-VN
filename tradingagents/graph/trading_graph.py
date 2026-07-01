@@ -82,30 +82,61 @@ class TradingAgentsGraph:
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
-        # Initialize LLMs with provider-specific thinking configuration
-        llm_kwargs = self._get_provider_kwargs()
+        # Initialize LLMs with provider-specific thinking configuration.
+        # deep_think_provider overrides llm_provider for Research Manager and
+        # Portfolio Manager only; all other agents use llm_provider (quick tier).
+        quick_provider = self.config["llm_provider"]
+        deep_provider = self.config.get("deep_think_provider") or quick_provider
 
         deep_cb = (deep_callbacks or []) + self.callbacks
         quick_cb = (quick_callbacks or []) + self.callbacks
 
-        deep_kwargs = {**llm_kwargs, **({"callbacks": deep_cb} if deep_cb else {})}
-        quick_kwargs = {**llm_kwargs, **({"callbacks": quick_cb} if quick_cb else {})}
+        deep_kwargs = {
+            **self._get_provider_kwargs(deep_provider),
+            **({"callbacks": deep_cb} if deep_cb else {}),
+        }
+        quick_kwargs = {
+            **self._get_provider_kwargs(quick_provider),
+            **({"callbacks": quick_cb} if quick_cb else {}),
+        }
+
+        # Analyst tier: same model as quick but with low temperature + optional seed
+        # to reduce Phase I run-to-run variance without dampening debate creativity.
+        analyst_kwargs = dict(quick_kwargs)
+        analyst_temperature = self.config.get("analyst_temperature")
+        if analyst_temperature is not None and analyst_temperature != "":
+            analyst_kwargs["temperature"] = float(analyst_temperature)
+        analyst_seed = self.config.get("analyst_seed")
+        if analyst_seed is not None and analyst_seed != "":
+            analyst_kwargs["seed"] = int(analyst_seed)
+
+        # PM tier: deep model with analyst_temperature to stabilise the final decision.
+        # Seed is not forwarded to Anthropic (unsupported).
+        if analyst_temperature is not None and analyst_temperature != "":
+            deep_kwargs["temperature"] = float(analyst_temperature)
 
         deep_client = create_llm_client(
-            provider=self.config["llm_provider"],
+            provider=deep_provider,
             model=self.config["deep_think_llm"],
             base_url=self.config.get("backend_url"),
             **deep_kwargs,
         )
         quick_client = create_llm_client(
-            provider=self.config["llm_provider"],
+            provider=quick_provider,
             model=self.config["quick_think_llm"],
             base_url=self.config.get("backend_url"),
             **quick_kwargs,
         )
+        analyst_client = create_llm_client(
+            provider=quick_provider,
+            model=self.config["quick_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **analyst_kwargs,
+        )
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
+        self.analyst_thinking_llm = analyst_client.get_llm()
         
         self.memory_log = TradingMemoryLog(self.config)
 
@@ -123,6 +154,7 @@ class TradingAgentsGraph:
             self.tool_nodes,
             self.conditional_logic,
             analyst_concurrency_limit=self.config.get("analyst_concurrency_limit", 1),
+            analyst_thinking_llm=self.analyst_thinking_llm,
         )
 
         self.propagator = Propagator(
@@ -141,10 +173,14 @@ class TradingAgentsGraph:
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
-    def _get_provider_kwargs(self) -> Dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
+    def _get_provider_kwargs(self, provider: str = None) -> Dict[str, Any]:
+        """Get provider-specific kwargs for LLM client creation.
+
+        Args:
+            provider: Provider name to build kwargs for. Defaults to llm_provider.
+        """
         kwargs = {}
-        provider = self.config.get("llm_provider", "").lower()
+        provider = (provider or self.config.get("llm_provider", "")).lower()
 
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
@@ -220,6 +256,10 @@ class TradingAgentsGraph:
         explicit = self.config.get("benchmark_ticker")
         if explicit:
             return explicit
+        # VN tickers (HOSE/HNX) benchmark against VNINDEX, not SPY.
+        from tradingagents.dataflows.market_router import is_vn_ticker
+        if is_vn_ticker(ticker):
+            return "VNINDEX"
         benchmark_map = self.config.get("benchmark_map", {})
         ticker_upper = ticker.upper()
         for suffix, benchmark in benchmark_map.items():
@@ -238,10 +278,25 @@ class TradingAgentsGraph:
         actual_holding_days)`` or ``(None, None, None)`` if price data is
         unavailable (too recent, delisted, or network error).
         """
+        from tradingagents.dataflows.market_router import is_vn_ticker
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
             end_str = end.strftime("%Y-%m-%d")
+
+            if is_vn_ticker(ticker):
+                # VN: lấy giá qua vnstock_data (yfinance không có mã HOSE/HNX),
+                # benchmark VNINDEX. Trả về None nếu chưa đủ dữ liệu (ngày tương lai).
+                from tradingagents.agents.utils.vn_technical_fetcher import _safe_hist
+                sdf = _safe_hist(ticker, trade_date, end_str)
+                bdf = _safe_hist(benchmark or "VNINDEX", trade_date, end_str)
+                if len(sdf) < 2 or len(bdf) < 2:
+                    return None, None, None
+                sc, bc = sdf["close"], bdf["close"]
+                actual_days = min(holding_days, len(sc) - 1, len(bc) - 1)
+                raw = float((sc.iloc[actual_days] - sc.iloc[0]) / sc.iloc[0])
+                bench_ret = float((bc.iloc[actual_days] - bc.iloc[0]) / bc.iloc[0])
+                return raw, raw - bench_ret, actual_days
 
             stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
             bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)
@@ -319,7 +374,49 @@ class TradingAgentsGraph:
         identity = resolve_instrument_identity(ticker)
         return build_instrument_context(ticker, asset_type, identity)
 
-    def propagate(self, company_name, trade_date, asset_type: str = "stock"):
+    def _resolve_company_profile(self, ticker: str, asset_type: str = "stock") -> str:
+        """Fetch company profile once at run start for C5 entity grounding.
+
+        Injected into fundamentals_analyst (prevents hallucination) and reused by
+        the C3 fact-check gate. Returns "" for non-VN tickers or on failure.
+        """
+        from tradingagents.dataflows.market_router import is_vn_ticker
+        if asset_type != "stock" or not is_vn_ticker(ticker):
+            return ""
+        try:
+            from tradingagents.agents.utils.vn_entity_verifier import fetch_company_profile_block
+            profile = fetch_company_profile_block(ticker)
+            if profile:
+                logger.info("Company profile fetched for %s (%d chars)", ticker, len(profile))
+            else:
+                logger.warning("Empty company profile for %s — C5 grounding disabled", ticker)
+            return profile
+        except Exception as e:
+            logger.warning("Could not fetch company profile for %s: %s", ticker, e)
+            return ""
+
+    def _resolve_financials(self, ticker: str, asset_type: str = "stock") -> Tuple[str, str]:
+        """Compute the canonical financials ONCE at run start (A1 single source of truth).
+
+        Python-computed payload (A2/A3) injected into every number-touching
+        agent. Best-effort: returns ("", "") for non-VN tickers or on failure,
+        so agents degrade to ticker-only context instead of fabricating numbers.
+        """
+        from tradingagents.dataflows.market_router import is_vn_ticker
+        if asset_type != "stock" or not is_vn_ticker(ticker):
+            return "", ""
+        try:
+            from tradingagents.agents.utils.vn_financial_fetcher import build_financials_payload
+            payload = build_financials_payload(ticker)
+            if payload.get("error"):
+                logger.warning("Financials payload for %s failed: %s", ticker, payload["error"])
+                return "", ""
+            return payload.get("block", ""), payload.get("chart_json", "")
+        except Exception as e:
+            logger.warning("Could not build financials payload for %s: %s", ticker, e)
+            return "", ""
+
+    def propagate(self, company_name, trade_date, asset_type: str = "stock", run_type: str = "unknown"):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -353,25 +450,30 @@ class TradingAgentsGraph:
                 logger.info("Starting fresh for %s on %s", company_name, trade_date)
 
         try:
-            return self._run_graph(company_name, trade_date, asset_type=asset_type)
+            return self._run_graph(company_name, trade_date, asset_type=asset_type, run_type=run_type)
         finally:
             if self._checkpointer_ctx is not None:
                 self._checkpointer_ctx.__exit__(None, None, None)
                 self._checkpointer_ctx = None
                 self.graph = self.workflow.compile()
 
-    def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
+    def _run_graph(self, company_name, trade_date, asset_type: str = "stock", run_type: str = "unknown"):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        financials_block, financials_chart_json = self._resolve_financials(company_name, asset_type)
+        company_profile_block = self._resolve_company_profile(company_name, asset_type)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            financials_block=financials_block,
+            financials_chart_json=financials_chart_json,
+            company_profile_block=company_profile_block,
         )
         args = self.propagator.get_graph_args()
 
@@ -407,6 +509,7 @@ class TradingAgentsGraph:
             ticker=company_name,
             trade_date=trade_date,
             final_trade_decision=final_state["final_trade_decision"],
+            run_type=run_type,
         )
 
         # Clear checkpoint on successful completion to avoid stale state.

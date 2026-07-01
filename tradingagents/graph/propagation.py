@@ -22,6 +22,9 @@ class Propagator:
         asset_type: str = "stock",
         past_context: str = "",
         instrument_context: str = "",
+        financials_block: str = "",
+        financials_chart_json: str = "",
+        company_profile_block: str = "",
     ) -> Dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -38,6 +41,11 @@ class Propagator:
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),
             "past_context": past_context,
+            "financials_block": financials_block,
+            "financials_chart_json": financials_chart_json,
+            "company_profile_block": company_profile_block,
+            "fact_check_corrections": "",
+            "verified_entity_claims": "",
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",
@@ -66,6 +74,9 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            "market_analyst_rating": None,
+            "news_analyst_rating": None,
+            "fundamentals_analyst_rating": None,
         }
 
     def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:
