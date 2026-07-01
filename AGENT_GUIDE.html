@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TradingAgents — Hướng Dẫn Kiến Trúc Multi-Agent</title>
+<style>
+  :root {
+    --ground:      #0A0E1A;
+    --panel:       #111827;
+    --panel-2:     #1A2333;
+    --border:      #1E293B;
+    --border-2:    #2D3F55;
+    --text:        #F1F5F9;
+    --muted:       #64748B;
+    --muted-2:     #94A3B8;
+    --green:       #10B981;
+    --green-dim:   #064E3B;
+    --red:         #F43F5E;
+    --red-dim:     #4C0519;
+    --amber:       #FBBF24;
+    --amber-dim:   #451A03;
+    --blue:        #60A5FA;
+    --code-bg:     #070C14;
+
+    --font-serif:  Georgia, 'Times New Roman', Times, serif;
+    --font-sans:   -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    --font-mono:   'Courier New', Courier, monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── LAYOUT ── */
+  .page-wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 24px 80px;
+  }
+
+  /* ── HEADER BAR ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 0 18px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 56px;
+  }
+  .topbar-logo {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .topbar-logo strong { color: var(--green); }
+  .topbar-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  /* ── HERO ── */
+  .hero { margin-bottom: 72px; }
+  .hero-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--green);
+    margin-bottom: 16px;
+  }
+  .hero h1 {
+    font-family: var(--font-serif);
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: normal;
+    line-height: 1.2;
+    color: var(--text);
+    margin-bottom: 20px;
+    letter-spacing: -0.02em;
+  }
+  .hero-sub {
+    font-size: 16px;
+    color: var(--muted-2);
+    max-width: 620px;
+    line-height: 1.6;
+  }
+  .hero-stats {
+    display: flex;
+    gap: 32px;
+    margin-top: 36px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+  }
+  .stat { display: flex; flex-direction: column; }
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    color: var(--text);
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+  .stat-value.green { color: var(--green); }
+  .stat-value.amber { color: var(--amber); }
+  .stat-value.red   { color: var(--red); }
+
+  /* ── SECTION HEADERS ── */
+  .section { margin-bottom: 64px; }
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 28px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .section h2 {
+    font-family: var(--font-serif);
+    font-size: 22px;
+    font-weight: normal;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+
+  /* ── FLOW DIAGRAM ── */
+  .flow-diagram { margin-bottom: 8px; }
+  .flow-phase {
+    position: relative;
+    padding: 20px 20px 20px 20px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    border: 1px solid transparent;
+  }
+  .flow-phase.phase-green {
+    background: color-mix(in srgb, var(--green-dim) 60%, var(--panel));
+    border-color: color-mix(in srgb, var(--green) 25%, transparent);
+  }
+  .flow-phase.phase-amber {
+    background: color-mix(in srgb, var(--amber-dim) 60%, var(--panel));
+    border-color: color-mix(in srgb, var(--amber) 20%, transparent);
+  }
+  .flow-phase.phase-red {
+    background: color-mix(in srgb, var(--red-dim) 60%, var(--panel));
+    border-color: color-mix(in srgb, var(--red) 20%, transparent);
+  }
+  .flow-phase-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .phase-green .flow-phase-label  { color: var(--green); }
+  .phase-amber .flow-phase-label  { color: var(--amber); }
+  .phase-red   .flow-phase-label  { color: var(--red); }
+  .flow-phase-label::after {
+    content: '';
+    display: inline-block;
+    flex: 1;
+    height: 1px;
+    opacity: 0.25;
+    background: currentColor;
+  }
+  .flow-nodes {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .node {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .node.green  { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); background: color-mix(in srgb, var(--green) 8%, transparent); }
+  .node.amber  { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: color-mix(in srgb, var(--amber) 8%, transparent); }
+  .node.red    { color: var(--red);   border-color: color-mix(in srgb, var(--red) 40%, transparent);   background: color-mix(in srgb, var(--red) 8%, transparent); }
+  .node.blue   { color: var(--blue);  border-color: color-mix(in srgb, var(--blue) 40%, transparent);  background: color-mix(in srgb, var(--blue) 8%, transparent); }
+  .arrow {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .arrow-debate { color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+  .flow-connector {
+    display: flex;
+    justify-content: center;
+    padding: 6px 0;
+    color: var(--muted);
+    font-size: 18px;
+  }
+  .flow-note {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+
+  /* ── STATE TABLE ── */
+  .state-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .state-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+  }
+  .state-card-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .state-card-title.green { color: var(--green); }
+  .state-card-title.amber { color: var(--amber); }
+  .state-card-title.red   { color: var(--red); }
+  .state-card-title.blue  { color: var(--blue); }
+  .state-field {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+    align-items: baseline;
+  }
+  .field-name {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--amber);
+    flex-shrink: 0;
+  }
+  .field-desc {
+    font-size: 12px;
+    color: var(--muted-2);
+  }
+
+  /* ── MODIFICATION CARDS ── */
+  .mod-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .mod-card-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    cursor: default;
+  }
+  .mod-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .badge-green { background: var(--green-dim); color: var(--green); border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); }
+  .badge-amber { background: var(--amber-dim); color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent); }
+  .badge-red   { background: var(--red-dim);   color: var(--red);   border: 1px solid color-mix(in srgb, var(--red) 30%, transparent); }
+  .mod-title {
+    font-family: var(--font-serif);
+    font-size: 17px;
+    font-weight: normal;
+    color: var(--text);
+  }
+  .mod-complexity {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .mod-body { padding: 20px; }
+  .mod-desc {
+    font-size: 14px;
+    color: var(--muted-2);
+    margin-bottom: 16px;
+    line-height: 1.6;
+  }
+
+  /* ── CODE BLOCKS ── */
+  .code-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow-x: auto;
+    margin-bottom: 12px;
+  }
+  .code-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .code-file {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--blue);
+  }
+  .code-lang {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .code-block pre {
+    padding: 14px 16px;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--text);
+    tab-size: 2;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .c-kw  { color: #C792EA; }
+  .c-fn  { color: #82AAFF; }
+  .c-str { color: var(--green); }
+  .c-cmt { color: var(--muted); font-style: italic; }
+  .c-var { color: var(--amber); }
+  .c-num { color: var(--red); }
+  .c-cls { color: #FFCB6B; }
+
+  /* ── STEPS ── */
+  .steps { counter-reset: step; list-style: none; }
+  .steps li {
+    position: relative;
+    padding-left: 40px;
+    margin-bottom: 20px;
+    counter-increment: step;
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 24px;
+    height: 24px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    border-radius: 50%;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--amber);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+  .step-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .step-file {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--blue);
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  /* ── REFERENCE TABLE ── */
+  .ref-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .ref-table thead tr {
+    border-bottom: 2px solid var(--border-2);
+  }
+  .ref-table th {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: normal;
+  }
+  .ref-table td {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--muted-2);
+  }
+  .ref-table tr:last-child td { border-bottom: none; }
+  .ref-table tr:hover td { background: var(--panel); }
+  .ref-table td:first-child { color: var(--text); font-weight: 500; }
+  td .file-ref {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--blue);
+    display: block;
+  }
+  td .tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  td .tag.green { background: var(--green-dim); color: var(--green); }
+  td .tag.amber { background: var(--amber-dim); color: var(--amber); }
+  td .tag.red   { background: var(--red-dim);   color: var(--red); }
+
+  /* ── INLINE CODE ── */
+  code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--amber);
+  }
+
+  /* ── CALLOUT ── */
+  .callout {
+    display: flex;
+    gap: 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--amber);
+    border-radius: 4px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: var(--muted-2);
+    line-height: 1.6;
+  }
+  .callout-icon { font-size: 15px; flex-shrink: 0; margin-top: 2px; }
+
+  /* ── FOOTER ── */
+  .footer {
+    margin-top: 64px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .footer-text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  @media (max-width: 640px) {
+    .state-grid { grid-template-columns: 1fr; }
+    .hero-stats { flex-wrap: wrap; gap: 20px; }
+    .mod-complexity { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="page-wrap">
+
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="topbar-logo"><strong>TradingAgents</strong> / Kiến trúc Multi-Agent</div>
+    <div class="topbar-meta">Cập nhật: 2026-06-21<br>LangGraph · Python</div>
+  </div>
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-eyebrow">Tài liệu kỹ thuật nội bộ</div>
+    <h1>Hướng dẫn kiến trúc<br>Multi-Agent Graph</h1>
+    <p class="hero-sub">
+      Mỗi quyết định giao dịch đi qua một hội đồng gồm 12 agent chuyên biệt —
+      phân tích, tranh luận, và ra quyết định theo ba giai đoạn tuần tự.
+      Tài liệu này giải thích cách graph hoạt động và cách thêm, bớt, sửa agent.
+    </p>
+    <div class="hero-stats">
+      <div class="stat">
+        <span class="stat-value green">12</span>
+        <span class="stat-label">Agent nodes</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value amber">3</span>
+        <span class="stat-label">Giai đoạn</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value red">2</span>
+        <span class="stat-label">Vòng debate</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" style="color:var(--blue)">1</span>
+        <span class="stat-label">Shared state</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 1: FLOW -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">01</span>
+      <h2>Luồng xử lý — ba giai đoạn</h2>
+    </div>
+
+    <div class="flow-diagram">
+      <!-- Phase 1: Analysis -->
+      <div class="flow-phase phase-green">
+        <div class="flow-phase-label">Giai đoạn 1 — Phân tích (tuần tự)</div>
+        <div class="flow-nodes">
+          <span class="node green">Market Analyst</span>
+          <span class="arrow">→</span>
+          <span class="node green">Sentiment Analyst</span>
+          <span class="arrow">→</span>
+          <span class="node green">News Analyst</span>
+          <span class="arrow">→</span>
+          <span class="node green">Fundamentals Analyst</span>
+        </div>
+        <div class="flow-note">
+          Mỗi analyst dùng tools riêng → ghi kết quả vào <code style="font-size:11px">market_report / sentiment_report / news_report / fundamentals_report</code>
+        </div>
+      </div>
+
+      <div class="flow-connector">↓</div>
+
+      <!-- Phase 2: Investment debate -->
+      <div class="flow-phase phase-amber">
+        <div class="flow-phase-label">Giai đoạn 2 — Tranh luận đầu tư</div>
+        <div class="flow-nodes">
+          <span class="node amber">Bull Researcher</span>
+          <span class="arrow-debate" style="margin:0 4px">⇄ debate</span>
+          <span class="node amber">Bear Researcher</span>
+          <span class="arrow">→</span>
+          <span class="node amber">Research Manager</span>
+          <span class="arrow">→</span>
+          <span class="node amber">Trader</span>
+        </div>
+        <div class="flow-note">
+          Bull ↔ Bear tranh luận <code style="font-size:11px">max_debate_rounds × 2</code> lượt → Research Manager tổng hợp → <code style="font-size:11px">investment_plan</code>
+        </div>
+      </div>
+
+      <div class="flow-connector">↓</div>
+
+      <!-- Phase 3: Risk -->
+      <div class="flow-phase phase-red">
+        <div class="flow-phase-label">Giai đoạn 3 — Quản lý rủi ro</div>
+        <div class="flow-nodes">
+          <span class="node red">Aggressive Analyst</span>
+          <span class="arrow-debate" style="margin:0 4px">⇄ debate</span>
+          <span class="node red">Conservative Analyst</span>
+          <span class="arrow-debate" style="margin:0 4px">⇄</span>
+          <span class="node red">Neutral Analyst</span>
+          <span class="arrow">→</span>
+          <span class="node red">Portfolio Manager</span>
+        </div>
+        <div class="flow-note">
+          Ba góc nhìn rủi ro tranh luận vòng tròn → Portfolio Manager ra <code style="font-size:11px">final_trade_decision</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 2: SHARED STATE -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">02</span>
+      <h2>Shared state — cách agents giao tiếp</h2>
+    </div>
+
+    <p style="color:var(--muted-2);margin-bottom:20px;font-size:14px;line-height:1.7">
+      Tất cả agents dùng chung một <code>AgentState</code> dict. Mỗi agent đọc state → xử lý → trả về delta dict để cập nhật.
+      File định nghĩa: <code style="color:var(--blue)">tradingagents/agents/utils/agent_states.py</code>
+    </p>
+
+    <div class="state-grid">
+      <div class="state-card">
+        <div class="state-card-title green">Analyst Reports</div>
+        <div class="state-field"><span class="field-name">market_report</span><span class="field-desc">Báo cáo kỹ thuật + chỉ số</span></div>
+        <div class="state-field"><span class="field-name">sentiment_report</span><span class="field-desc">Tâm lý thị trường</span></div>
+        <div class="state-field"><span class="field-name">news_report</span><span class="field-desc">Tin tức vĩ mô & công ty</span></div>
+        <div class="state-field"><span class="field-name">fundamentals_report</span><span class="field-desc">Tài chính cơ bản</span></div>
+      </div>
+
+      <div class="state-card">
+        <div class="state-card-title amber">Investment Debate State</div>
+        <div class="state-field"><span class="field-name">bull_history</span><span class="field-desc">Lịch sử lập luận Bull</span></div>
+        <div class="state-field"><span class="field-name">bear_history</span><span class="field-desc">Lịch sử lập luận Bear</span></div>
+        <div class="state-field"><span class="field-name">judge_decision</span><span class="field-desc">Quyết định Research Manager</span></div>
+        <div class="state-field"><span class="field-name">count</span><span class="field-desc">Số vòng debate đã qua</span></div>
+      </div>
+
+      <div class="state-card">
+        <div class="state-card-title red">Risk Debate State</div>
+        <div class="state-field"><span class="field-name">aggressive_history</span><span class="field-desc">Lịch sử Aggressive</span></div>
+        <div class="state-field"><span class="field-name">conservative_history</span><span class="field-desc">Lịch sử Conservative</span></div>
+        <div class="state-field"><span class="field-name">latest_speaker</span><span class="field-desc">Agent nói lượt cuối</span></div>
+        <div class="state-field"><span class="field-name">count</span><span class="field-desc">Số vòng risk debate</span></div>
+      </div>
+
+      <div class="state-card">
+        <div class="state-card-title blue">Decisions & Memory</div>
+        <div class="state-field"><span class="field-name">investment_plan</span><span class="field-desc">Buy/Hold/Sell từ Research Mgr</span></div>
+        <div class="state-field"><span class="field-name">trader_investment_plan</span><span class="field-desc">Đề xuất giao dịch cụ thể</span></div>
+        <div class="state-field"><span class="field-name">final_trade_decision</span><span class="field-desc">Quyết định cuối từ Portfolio Mgr</span></div>
+        <div class="state-field"><span class="field-name">past_context</span><span class="field-desc">Lịch sử quyết định cùng ticker</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 3: MODIFICATIONS -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">03</span>
+      <h2>Ba loại thay đổi</h2>
+    </div>
+
+    <!-- MOD 1: Edit instructions -->
+    <div class="mod-card">
+      <div class="mod-card-header">
+        <span class="mod-badge badge-green">Loại 1</span>
+        <span class="mod-title">Sửa instructions của agent có sẵn</span>
+        <span class="mod-complexity">Độ phức tạp: ⭐</span>
+      </div>
+      <div class="mod-body">
+        <p class="mod-desc">
+          Toàn bộ "hướng dẫn" của mỗi agent nằm trong một chuỗi <code>system_message</code> hoặc <code>prompt</code>
+          bên trong hàm factory. Sửa trực tiếp chuỗi đó — không cần đụng vào graph hay state.
+        </p>
+
+        <div class="callout">
+          <span class="callout-icon">↳</span>
+          <span>Ví dụ: thêm quy tắc thị trường VN vào Market Analyst. File: <strong style="color:var(--blue)">tradingagents/agents/analysts/market_analyst.py</strong>, dòng 56–84 (biến <code>system_message</code>)</span>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            <span class="code-file">tradingagents/agents/analysts/market_analyst.py</span>
+            <span class="code-lang">python</span>
+          </div>
+          <pre><span class="c-cmt"># Tìm biến system_message bên trong create_market_analyst(), dòng ~56</span>
+<span class="c-var">system_message</span> = (
+    <span class="c-str">"""You are a trading assistant tasked with analyzing financial markets...
+
+[THÊM BẤT KỲ INSTRUCTION NÀO VÀO ĐÂY]
+Ví dụ — thêm quy tắc đặc thù VN:
+- Ưu tiên foreign ownership room (room ngoại) như một catalyst tăng giá
+- Xem xét margin call cascade khi giá san liên tiếp 3+ phiên
+- Factor in T+2 settlement khi đề xuất stop-loss và exit strategy
+"""</span>
+    + <span class="c-fn">get_language_instruction</span>()
+)</pre>
+        </div>
+
+        <p style="font-size:13px;color:var(--muted-2);margin-top:4px">Tương tự cho các agent khác:</p>
+        <table class="ref-table" style="margin-top:10px">
+          <thead><tr>
+            <th>Agent</th><th>File</th><th>Vị trí prompt</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>Bull/Bear Researcher</td><td><span class="file-ref">agents/researchers/bull_researcher.py</span></td><td>dòng 27 — biến <code>prompt</code></td></tr>
+            <tr><td>Research Manager</td><td><span class="file-ref">agents/managers/research_manager.py</span></td><td>trong hàm factory</td></tr>
+            <tr><td>Portfolio Manager</td><td><span class="file-ref">agents/managers/portfolio_manager.py</span></td><td>trong hàm factory</td></tr>
+            <tr><td>Risk Analysts</td><td><span class="file-ref">agents/risk_mgmt/aggressive_debator.py</span></td><td>biến <code>prompt</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- MOD 2: Remove analyst -->
+    <div class="mod-card">
+      <div class="mod-card-header">
+        <span class="mod-badge badge-green">Loại 2</span>
+        <span class="mod-title">Bỏ bớt analyst (không chạy agent nào đó)</span>
+        <span class="mod-complexity">Độ phức tạp: ⭐</span>
+      </div>
+      <div class="mod-body">
+        <p class="mod-desc">
+          Chỉ cần sửa list <code>selected_analysts</code> trong <code>main.py</code>.
+          Graph tự động điều chỉnh thứ tự và kết nối — không cần đụng vào bất kỳ file graph nào khác.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            <span class="code-file">main.py</span>
+            <span class="code-lang">python</span>
+          </div>
+          <pre><span class="c-cmt"># Tùy chọn: "market", "social", "news", "fundamentals"</span>
+
+<span class="c-cmt"># Chạy tất cả 4 analysts (mặc định)</span>
+<span class="c-var">selected_analysts</span> = [<span class="c-str">"market"</span>, <span class="c-str">"social"</span>, <span class="c-str">"news"</span>, <span class="c-str">"fundamentals"</span>]
+
+<span class="c-cmt"># Chỉ market + fundamentals (nhanh hơn, tiết kiệm token)</span>
+<span class="c-var">selected_analysts</span> = [<span class="c-str">"market"</span>, <span class="c-str">"fundamentals"</span>]
+
+<span class="c-cmt"># Chỉ news + sentiment (cho phân tích sự kiện ngắn hạn)</span>
+<span class="c-var">selected_analysts</span> = [<span class="c-str">"social"</span>, <span class="c-str">"news"</span>]</pre>
+        </div>
+
+        <div class="callout">
+          <span class="callout-icon">!</span>
+          <span>Analyst bị bỏ sẽ để trống field report tương ứng trong state. Bull/Bear Researcher vẫn hoạt động nhưng sẽ thấy chuỗi rỗng cho report đó — không gây lỗi.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MOD 3: Add new analyst -->
+    <div class="mod-card">
+      <div class="mod-card-header">
+        <span class="mod-badge badge-amber">Loại 3</span>
+        <span class="mod-title">Thêm một analyst mới vào graph</span>
+        <span class="mod-complexity">Độ phức tạp: ⭐⭐⭐</span>
+      </div>
+      <div class="mod-body">
+        <p class="mod-desc">
+          Cần sửa <strong>4 file</strong> theo đúng thứ tự. Ví dụ dưới đây thêm một <strong>Technical Analyst</strong>
+          chuyên về chart patterns (Head &amp; Shoulders, support/resistance levels).
+        </p>
+
+        <ol class="steps">
+          <li>
+            <div class="step-title">Tạo file agent mới</div>
+            <span class="step-file">tradingagents/agents/analysts/technical_analyst.py</span>
+            <div class="code-block">
+              <div class="code-block-header">
+                <span class="code-file">analysts/technical_analyst.py</span>
+                <span class="code-lang">python — copy cấu trúc từ market_analyst.py</span>
+              </div>
+              <pre><span class="c-kw">from</span> langchain_core.prompts <span class="c-kw">import</span> ChatPromptTemplate, MessagesPlaceholder
+<span class="c-kw">from</span> tradingagents.agents.utils.agent_utils <span class="c-kw">import</span> (
+    get_instrument_context_from_state,
+    get_stock_data, get_indicators,
+    get_language_instruction,
+)
+
+<span class="c-kw">def</span> <span class="c-fn">create_technical_analyst</span>(llm):
+    <span class="c-kw">def</span> <span class="c-fn">technical_analyst_node</span>(state):
+        current_date = state[<span class="c-str">"trade_date"</span>]
+        ticker = state[<span class="c-str">"company_of_interest"</span>]
+        instrument_context = <span class="c-fn">get_instrument_context_from_state</span>(state)
+
+        tools = [get_stock_data, get_indicators]
+
+        system_message = (
+            <span class="c-str">"""You are a Technical Analyst specializing in chart patterns.
+Focus on: Support/Resistance levels, Head & Shoulders,
+Cup & Handle, trend channels, and breakout confirmation.
+Always quantify: exact price levels, volume confirmation,
+projected targets with % moves."""</span>
+            + <span class="c-fn">get_language_instruction</span>()
+        )
+
+        <span class="c-cmt"># ... (copy phần prompt và chain từ market_analyst.py)</span>
+
+        <span class="c-kw">return</span> {
+            <span class="c-str">"messages"</span>: [result],
+            <span class="c-str">"technical_report"</span>: report,  <span class="c-cmt"># field mới!</span>
+        }
+    <span class="c-kw">return</span> technical_analyst_node</pre>
+            </div>
+          </li>
+
+          <li>
+            <div class="step-title">Thêm field vào AgentState</div>
+            <span class="step-file">tradingagents/agents/utils/agent_states.py</span>
+            <div class="code-block">
+              <div class="code-block-header">
+                <span class="code-file">agent_states.py</span>
+                <span class="code-lang">python</span>
+              </div>
+              <pre><span class="c-kw">class</span> <span class="c-cls">AgentState</span>(MessagesState):
+    <span class="c-cmt"># ... các field hiện có ...</span>
+    market_report: str
+    sentiment_report: str
+    news_report: str
+    fundamentals_report: str
+    technical_report: str  <span class="c-cmt"># ← THÊM DÒNG NÀY</span></pre>
+            </div>
+          </li>
+
+          <li>
+            <div class="step-title">Đăng ký NodeSpec</div>
+            <span class="step-file">tradingagents/graph/analyst_execution.py — ANALYST_NODE_SPECS dict, dòng 21</span>
+            <div class="code-block">
+              <div class="code-block-header">
+                <span class="code-file">analyst_execution.py</span>
+                <span class="code-lang">python</span>
+              </div>
+              <pre>ANALYST_NODE_SPECS: Dict[str, AnalystNodeSpec] = {
+    <span class="c-cmt"># ... entries hiện có ...</span>
+    <span class="c-str">"technical"</span>: AnalystNodeSpec(   <span class="c-cmt"># ← THÊM ENTRY NÀY</span>
+        key=<span class="c-str">"technical"</span>,
+        agent_node=<span class="c-str">"Technical Analyst"</span>,
+        clear_node=<span class="c-str">"Msg Clear Technical"</span>,
+        tool_node=<span class="c-str">"tools_technical"</span>,
+        report_key=<span class="c-str">"technical_report"</span>,
+    ),
+}</pre>
+            </div>
+          </li>
+
+          <li>
+            <div class="step-title">Đăng ký factory và tool node trong graph</div>
+            <span class="step-file">tradingagents/graph/setup.py — analyst_factories dict, dòng 49</span>
+            <div class="code-block">
+              <div class="code-block-header">
+                <span class="code-file">setup.py</span>
+                <span class="code-lang">python</span>
+              </div>
+              <pre>analyst_factories = {
+    <span class="c-str">"market"</span>:       <span class="c-kw">lambda</span>: <span class="c-fn">create_market_analyst</span>(self.quick_thinking_llm),
+    <span class="c-str">"social"</span>:       <span class="c-kw">lambda</span>: <span class="c-fn">create_sentiment_analyst</span>(self.quick_thinking_llm),
+    <span class="c-str">"news"</span>:         <span class="c-kw">lambda</span>: <span class="c-fn">create_news_analyst</span>(self.quick_thinking_llm),
+    <span class="c-str">"fundamentals"</span>: <span class="c-kw">lambda</span>: <span class="c-fn">create_fundamentals_analyst</span>(self.quick_thinking_llm),
+    <span class="c-str">"technical"</span>:    <span class="c-kw">lambda</span>: <span class="c-fn">create_technical_analyst</span>(self.quick_thinking_llm),  <span class="c-cmt"># ←</span>
+}
+
+<span class="c-cmt"># Thêm tool node — trong trading_graph.py, tìm đoạn tạo tool_nodes:</span>
+tool_nodes[<span class="c-str">"technical"</span>] = ToolNode([get_stock_data, get_indicators])  <span class="c-cmt"># ←</span></pre>
+            </div>
+
+            <p style="font-size:13px;color:var(--muted-2);margin-top:12px">Sau đó trong <code>main.py</code>, thêm <code>"technical"</code> vào list:</p>
+            <div class="code-block">
+              <div class="code-block-header">
+                <span class="code-file">main.py</span>
+                <span class="code-lang">python</span>
+              </div>
+              <pre>selected_analysts = [<span class="c-str">"market"</span>, <span class="c-str">"social"</span>, <span class="c-str">"news"</span>, <span class="c-str">"fundamentals"</span>, <span class="c-str">"technical"</span>]</pre>
+            </div>
+          </li>
+        </ol>
+
+        <div class="callout">
+          <span class="callout-icon">!</span>
+          <span>Bull/Bear Researcher sẽ tự động thấy <code>technical_report</code> trong state — nhưng bạn cần cập nhật prompt của họ để họ biết đọc và tham chiếu field mới này khi tranh luận.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 4: QUICK REFERENCE -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-num">04</span>
+      <h2>Bảng tham chiếu nhanh</h2>
+    </div>
+
+    <table class="ref-table">
+      <thead>
+        <tr>
+          <th>Mục tiêu</th>
+          <th>File cần sửa</th>
+          <th>Độ phức tạp</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Thay đổi cách agent viết report</td>
+          <td><span class="file-ref">agents/analysts/[tên]_analyst.py</span>Sửa biến <code>system_message</code> hoặc <code>prompt</code></td>
+          <td><span class="tag green">Dễ — 1 file</span></td>
+        </tr>
+        <tr>
+          <td>Thay đổi cách Bull/Bear tranh luận</td>
+          <td><span class="file-ref">agents/researchers/bull_researcher.py</span><span class="file-ref">agents/researchers/bear_researcher.py</span></td>
+          <td><span class="tag green">Dễ — 2 file</span></td>
+        </tr>
+        <tr>
+          <td>Bỏ bớt analyst</td>
+          <td><span class="file-ref">main.py</span>Xóa key khỏi <code>selected_analysts</code></td>
+          <td><span class="tag green">Dễ — 1 dòng</span></td>
+        </tr>
+        <tr>
+          <td>Tăng/giảm số vòng debate</td>
+          <td><span class="file-ref">tradingagents/default_config.py</span>Sửa <code>max_debate_rounds</code>, <code>max_risk_discuss_rounds</code></td>
+          <td><span class="tag green">Dễ — 1 file</span></td>
+        </tr>
+        <tr>
+          <td>Thêm analyst mới vào phase 1</td>
+          <td><span class="file-ref">agents/analysts/[mới].py</span><span class="file-ref">agents/utils/agent_states.py</span><span class="file-ref">graph/analyst_execution.py</span><span class="file-ref">graph/setup.py + trading_graph.py</span></td>
+          <td><span class="tag amber">Trung bình — 4 file</span></td>
+        </tr>
+        <tr>
+          <td>Thêm researcher mới vào debate</td>
+          <td>4 file trên + sửa thêm <code>conditional_logic.py</code> để routing</td>
+          <td><span class="tag amber">Trung bình — 5 file</span></td>
+        </tr>
+        <tr>
+          <td>Thêm agent hoàn toàn ngoài flow</td>
+          <td>Tất cả trên + sửa graph edges trong <code>setup.py</code></td>
+          <td><span class="tag red">Khó — 6+ file</span></td>
+        </tr>
+        <tr>
+          <td>Thêm tool mới cho analyst</td>
+          <td><span class="file-ref">agents/utils/agent_utils.py</span>Thêm hàm tool → thêm vào list <code>tools</code> trong analyst</td>
+          <td><span class="tag amber">Trung bình — 2 file</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <div class="footer-text">TradingAgents / Multi-Agent Architecture Guide</div>
+    <div class="footer-text">LangGraph · Python · Khoa Nguyen</div>
+  </div>
+
+</div>
+</body>
+</html>
