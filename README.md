@@ -304,3 +304,81 @@ Please reference our work if you find *TradingAgents* provides you with some hel
       url={https://arxiv.org/abs/2412.20138}, 
 }
 ```
+
+---
+
+## 🇻🇳 Vietnam Fork — TradingAgents-VN
+
+> This fork is maintained by [Khoa Nguyen](https://github.com/nguyenkhoa1809) at Korea Investment Vietnam.  
+> It extends the upstream framework with deep customizations for **HOSE/HNX** (Vietnamese stock market) while preserving the original architecture.
+
+### What's different from upstream
+
+| Feature | Upstream | This fork |
+|---|---|---|
+| Vietnam market data | ✗ | ✓ `vnstock_data` · HOSE/HNX · tiếng Việt output |
+| Report output | CLI text only | ✓ Full HTML report — charts, signal banner, 6-agent rating table |
+| Structured ratings | Partial (PM/RM/Trader not persisted) | ✓ All 6 agents save rating + reason to state/JSON |
+| Citation validator | ✗ | ✓ Auto-flags hallucinated analyst citations |
+| Recovery mode | ✗ | ✓ `recover.py` — re-run from saved state without full pipeline rerun |
+| Backtest accuracy | Look-ahead bias in financial data | ✓ `trade_date`-aware fetching |
+| Vietnamese prose | Raw LLM output | ✓ Optional GLM post-processing for natural Vietnamese |
+| LLM providers | OpenAI, Anthropic | + DeepSeek, GLM/ZhipuAI, OpenRouter + cost tracking |
+
+### VN-specific additions
+
+**Data layer**
+- `tradingagents/dataflows/vnstock_data_adapter.py` — bridges `vnstock_data` (sponsored tier) for HOSE/HNX price, financials, sentiment, and news
+- `tradingagents/agents/utils/vn_financial_fetcher.py` — sector-aware financial context builder; pre-computes bank vs non-bank ratios, TTM metrics, FCF; single source of truth for all agents (no re-fetching)
+- `tradingagents/dataflows/market_router.py` — routes VN tickers to `vnstock_data` stack, global tickers to `yfinance`/`alpha_vantage`
+
+**Report engine**
+- `render_report.py` — standalone HTML report generator: candlestick charts, MACD/RSI overlays, scroll-spy navigation, conviction badge, 6-agent rating summary table with reasons
+
+**Pipeline reliability**
+- `tradingagents/agents/utils/structured.py` — `invoke_structured_or_freetext()` returns `(rendered_text, pydantic_obj)` so callers save typed ratings directly — no regex re-extraction at render time
+- `tradingagents/agents/utils/citation_validator.py` — strips unverifiable analyst/broker citations before text reaches downstream agents
+- `recover.py` — load saved JSON state, re-run only failed agents, or render-only without any LLM call
+
+**Tickers analyzed** (42+):
+`ACB` `BID` `BMP` `BVH` `CTD` `CTG` `DCM` `DGW` `DPG` `FPT` `FRT` `GAS` `GEE` `GEL` `GEX` `GMD` `GVR` `HDB` `HPG` `IDC` `MBB` `MCH` `MSN` `MWG` `NLG` `PHR` `PNJ` `POW` `PVD` `PVS` `PVT` `REE` `SSI` `STB` `TCB` `TCX` `VCB` `VCI` `VHM` `VIC` `VNM` `VPB`
+
+### Quick start (VN mode)
+
+```python
+# main.py — lines to configure
+TICKERS    = ["VPB", "ACB"]        # line 152
+TRADE_DATE = "2026-07-03"          # line 153 — or leave as date.today()
+PROVIDER   = "deepseek-pro"        # line 186
+
+# Run
+python main.py
+
+# Render-only from saved state (no LLM cost)
+python recover.py --ticker VPB --date 2026-07-03 --render-only
+
+# Re-run a failed agent from saved state
+python recover.py --ticker VPB --date 2026-07-03 --provider deepseek
+```
+
+### LLM providers supported
+
+| Preset | Deep-think model | Quick-think model |
+|---|---|---|
+| `deepseek-pro` | deepseek-v4-pro | deepseek-v4-flash |
+| `deepseek` | deepseek-v4-flash | deepseek-v4-flash |
+| `claude` | claude-sonnet-4-6 | claude-haiku-4-5 |
+| `claude-opus` | claude-opus-4-8 | claude-haiku-4-5 |
+| `openai` | gpt-5.5 | gpt-5.4-mini |
+| `openrouter` | google/gemini-2.5-pro | google/gemini-2.5-flash |
+
+> **GLM prose refinement** (optional): set `ZHIPU_API_KEY` for free-tier GLM-4.5-flash post-processing of Vietnamese output.
+
+### Environment variables (`.env`)
+
+```
+DEEPSEEK_API_KEY=...
+ANTHROPIC_API_KEY=...
+OPENROUTER_API_KEY=...
+ZHIPU_API_KEY=...        # optional — free GLM prose refine
+```
