@@ -309,7 +309,7 @@ Please reference our work if you find *TradingAgents* provides you with some hel
 
 ## 🇻🇳 Vietnam Fork — TradingAgents-VN
 
-> This fork is maintained by [Khoa Nguyen](https://github.com/nguyenkhoa1809) at Korea Investment Vietnam.  
+> This fork is maintained by [Khoa Nguyen](https://github.com/nguyenkhoa1809).  
 > It extends the upstream framework with deep customizations for **HOSE/HNX** (Vietnamese stock market) while preserving the original architecture.
 
 ### What's different from upstream
