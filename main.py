@@ -63,6 +63,9 @@ _PRICING_PER_M: dict[str, tuple[float, float]] = {
     "z-ai/glm-5.2":             (1.40,  4.40),
     "z-ai/glm-4.6":             (0.60,  2.20),
     "z-ai/glm-4.5-air":         (0.20,  1.10),
+    # Z.AI direct (bigmodel.cn) — free tier
+    "glm-4.5-flash":            (0.00,  0.00),
+    "glm-4-flash":              (0.00,  0.00),
 }
 
 def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
@@ -73,11 +76,12 @@ def _calc_cost(model: str, tokens_in: int, tokens_out: int) -> float:
 _CHART_COMMENT_RE = _re.compile(r"<!--\s*(?:VN_CHART_DATA|VN_TECH_DATA)\s+\{.*?\}\s*-->", _re.DOTALL)
 
 
-def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> dict[str, str]:
+def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> tuple[dict[str, str], dict]:
     """Post-process selected VN sections through GLM for better Vietnamese prose quality.
 
     Uses ZHIPU_API_KEY (bigmodel.cn, free glm-4-flash) if available,
     otherwise falls back to OPENROUTER_API_KEY (z-ai/glm-4.5-air, paid).
+    Returns (refined_sections, glm_stats) where glm_stats = {model, tokens_in, tokens_out}.
     """
     zhipu_key = os.getenv("ZHIPU_API_KEY")
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
@@ -94,16 +98,17 @@ def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> dict[s
         print("  [GLM] Using OpenRouter (z-ai/glm-4.5-air)")
     else:
         print("  [GLM] Skipped: set ZHIPU_API_KEY (free) or OPENROUTER_API_KEY in .env")
-        return sections
+        return sections, {}
 
     try:
         from openai import OpenAI
         client = OpenAI(base_url=base_url, api_key=api_key)
     except ImportError:
         print("  [GLM] Skipped: openai package not installed")
-        return sections
+        return sections, {}
 
     refined = dict(sections)
+    glm_tok_in = glm_tok_out = 0
     for key in target_keys:
         content = sections.get(key, "")
         if not content.strip():
@@ -153,16 +158,19 @@ def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> dict[s
             if chart_comment:
                 refined_text += f"\n{chart_comment}"
             refined[key] = refined_text
+            if resp.usage:
+                glm_tok_in  += resp.usage.prompt_tokens or 0
+                glm_tok_out += resp.usage.completion_tokens or 0
             print(f"  [GLM] Done {key} → {len(refined_text):,} chars")
         except Exception as e:
             print(f"  [GLM] Skipped {key}: {e}")
 
-    return refined
+    return refined, {"model": model, "tokens_in": glm_tok_in, "tokens_out": glm_tok_out}
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Single ticker:  TICKERS = ["VCB"]
 # Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
-TICKERS    = ["PVD"]
+TICKERS    = ["VCB"]
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 
 # OUTPUT LANGUAGE — ngôn ngữ của TẤT CẢ báo cáo (tranh luận nội bộ vẫn English)
@@ -192,6 +200,7 @@ VN_PROSE_REFINE_SECTIONS = [
 # "openai-cheap"    gpt-5.4                           gpt-5.4-nano                  ~$0.10
 # "openrouter"      google/gemini-2.5-pro             google/gemini-2.5-flash       ~$0.05
 # "openrouter-free" meta-llama/llama-3.3-70b          meta-llama/llama-3.3-70b      ~$0.00*
+# "glm"             z-ai/glm-5.2                      z-ai/glm-5.2                  ~$0.00*
 #                   * free models have rate limits, may be slow
 #
 # OpenRouter model IDs: see https://openrouter.ai/models  (format: provider/model-name)
@@ -239,6 +248,11 @@ _PROVIDER_PRESETS = {
         "deep_think_llm": "meta-llama/llama-3.3-70b-instruct",
         "quick_think_llm":"meta-llama/llama-3.3-70b-instruct",
     },
+    "glm": {
+        "llm_provider":   "openrouter",
+        "deep_think_llm": "z-ai/glm-5.2",
+        "quick_think_llm":"z-ai/glm-5.2",
+    },
 }
 
 # ANALYST SELECTION — controls cost vs quality
@@ -250,7 +264,8 @@ ANALYSTS = ["market", "fundamentals", "news", "social"]  # "social" = sentiment 
 # ── Run analysis ──────────────────────────────────────────────────────────────
 SECTION_KEYS = [
     "market_report", "sentiment_report", "news_report",
-    "fundamentals_report", "investment_plan", "final_trade_decision",
+    "fundamentals_report", "investment_plan", "trader_investment_plan",
+    "final_trade_decision",
 ]
 
 config = DEFAULT_CONFIG.copy()
@@ -259,11 +274,15 @@ config["output_language"] = OUTPUT_LANGUAGE
 
 # Research Manager + Portfolio Manager → Claude Sonnet (deep tier only).
 # Quick-tier agents (analysts, researchers, trader, risk) stay on PROVIDER above.
-# Rollback: comment out the 2 lines below.
-config["deep_think_provider"] = "anthropic"
-config["deep_think_llm"] = "claude-sonnet-4-6"
+# Rollback: uncomment the 2 lines below.
+# config["deep_think_provider"] = "anthropic"
+# config["deep_think_llm"] = "claude-sonnet-4-6"
 
-_model_info = _PROVIDER_PRESETS[PROVIDER]
+# Derive from config AFTER overrides so model chips + cost calc reflect actual models used.
+_model_info = {
+    "deep_think_llm":  config["deep_think_llm"],
+    "quick_think_llm": config["quick_think_llm"],
+}
 
 for TICKER in TICKERS:
     print(f"\n{'='*55}\n  Analyzing {TICKER} ({TICKERS.index(TICKER)+1}/{len(TICKERS)})\n{'='*55}")
@@ -301,14 +320,23 @@ for TICKER in TICKERS:
 
         # ── Build sections ───────────────────────────────────────────────────────
         sections = {k: state.get(k, "") for k in SECTION_KEYS if state.get(k, "").strip()}
-        trader = state.get("trader_investment_decision", "")
-        if isinstance(trader, str) and trader.strip():
-            sections["trader_investment_plan"] = trader
 
         # ── VN Prose Refinement via GLM (Z.AI on OpenRouter) ──────────────────────
+        glm_stats = {}
         if VN_PROSE_REFINE and is_vn_ticker(TICKER) and sections:
             print(f"\n[GLM] Refining Vietnamese prose...")
-            sections = _refine_vn_prose(sections, VN_PROSE_REFINE_SECTIONS)
+            sections, glm_stats = _refine_vn_prose(sections, VN_PROSE_REFINE_SECTIONS)
+            if glm_stats:
+                glm_cost = _calc_cost(glm_stats["model"], glm_stats["tokens_in"], glm_stats["tokens_out"])
+                total_cost += glm_cost
+                total_tok_in  += glm_stats["tokens_in"]
+                total_tok_out += glm_stats["tokens_out"]
+                cost_str = (
+                    f"${total_cost:.4f} · {total_tok_in+total_tok_out:,} tokens "
+                    f"({total_tok_in:,}in / {total_tok_out:,}out)"
+                )
+                print(f"  [GLM] {glm_stats['tokens_in']:,}in / {glm_stats['tokens_out']:,}out"
+                      f" · ${glm_cost:.4f}")
 
         # ── Fact-check gate (C3) — log contradictions ────────────────────────────
         fact_corrections = state.get("fact_check_corrections", "")
@@ -338,19 +366,29 @@ for TICKER in TICKERS:
     if sections:
         out_dir = Path(__file__).parent / "reports" / TICKER
         out_dir.mkdir(parents=True, exist_ok=True)
-        v = 1
-        while (out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html").exists():
-            v += 1
-        out_path = out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_v{v}.html"
+        _hhmm = datetime.now().strftime("%H%M")
+        out_path = out_dir / f"{TICKER}_{TRADE_DATE}_{PROVIDER}_{_hhmm}.html"
+        run_model_info = dict(_model_info)
+        if glm_stats.get("model"):
+            run_model_info["refine_llm"] = glm_stats["model"]
         html = build_html(
             TICKER, TRADE_DATE, sections,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            model_info=_model_info,
+            model_info=run_model_info,
             cost_str=cost_str,
             agent_ratings={
-                "market":       state.get("market_analyst_rating"),
-                "news":         state.get("news_analyst_rating"),
-                "fundamentals": state.get("fundamentals_analyst_rating"),
+                "market":             state.get("market_analyst_rating"),
+                "news":               state.get("news_analyst_rating"),
+                "fundamentals":       state.get("fundamentals_analyst_rating"),
+                "market_reason":      state.get("market_analyst_reason"),
+                "news_reason":        state.get("news_analyst_reason"),
+                "fundamentals_reason": state.get("fundamentals_analyst_reason"),
+                "rm":                 state.get("rm_rating"),
+                "rm_reason":          state.get("rm_reason"),
+                "trader":             state.get("trader_rating"),
+                "trader_reason":      state.get("trader_reason"),
+                "pm":                 state.get("pm_rating"),
+                "pm_reason":          state.get("pm_reason"),
             },
         )
         out_path.write_text(html, encoding="utf-8")

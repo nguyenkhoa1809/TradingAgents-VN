@@ -77,7 +77,7 @@ class ResearchPlan(BaseModel):
     )
     evidence_assessment: str = Field(
         description=(
-            "Đánh giá bằng chứng ĐỐI XỨNG cho cả hai phía trước khi kết luận (B3). "
+            "Đánh giá bằng chứng ĐỐI XỨNG cho cả hai phía trước khi kết luận. "
             "Với MỖI bên (bull và bear), liệt kê rõ: data point nào là ĐÃ XÁC NHẬN "
             "(confirmed — số liệu lịch sử/đã công bố) vs DỰ BÁO (forecast — kỳ vọng "
             "tương lai chưa chứng minh). Áp dụng CÙNG MỘT tiêu chuẩn bằng chứng cho "
@@ -91,7 +91,7 @@ class ResearchPlan(BaseModel):
             "debate, ending with which arguments led to the recommendation. "
             "Speak naturally, as if to a teammate. Chỉ bổ sung thông tin/lập luận "
             "MỚI — không lặp lại nguyên văn các luận điểm đã nêu ở phần phân tích "
-            "trước (B4)."
+            "trước."
         ),
     )
     strategic_actions: str = Field(
@@ -197,15 +197,15 @@ class PortfolioDecision(BaseModel):
             "Underweight / Sell. Rating PHẢI suy ra TỪ Expected Value + mức tin cậy "
             "(KHÔNG phải từ 'bên nào thắng tranh luận'). Nếu rating ngược dấu với EV "
             "thì phần expected_value phải giải thích rõ lý do (rủi ro đuôi, thanh "
-            "khoản...) — nếu không, rating sai (B1)."
+            "khoản...) — nếu không, rating bị coi là sai."
         ),
     )
     expected_value: str = Field(
         description=(
-            "Khung Expected Value (B1) — BẮT BUỘC: (1) lấy đúng các kịch bản + xác "
+            "Khung Expected Value — BẮT BUỘC: (1) lấy đúng các kịch bản + xác "
             "suất đã sinh ở phase trước; (2) tính EV có trọng số = Σ(xác suất × "
             "payoff), ghi rõ phép tính; (3) nêu rating suy ra từ EV. "
-            "Đồng thời BẮC CẦU định giá ↔ khuyến nghị (B2): nếu định giá cho upside "
+            "Đồng thời bắc cầu định giá và khuyến nghị: nếu định giá cho upside "
             "X%, phải có một câu dạng 'Định giá cho upside X%, nhưng tôi khuyến nghị "
             "Y vì...' — không được để định giá và khuyến nghị mâu thuẫn mà không "
             "giải thích. Số liệu trích từ block 'SỐ LIỆU TÀI CHÍNH CHÍNH THỐNG'."
@@ -253,7 +253,7 @@ class PortfolioDecision(BaseModel):
             "debate. If prior lessons are referenced in the prompt context, "
             "incorporate them; otherwise rely solely on the current analysis. "
             "Chỉ bổ sung thông tin MỚI, không lặp lại nguyên văn luận điểm đã nêu "
-            "ở các phase trước (B4)."
+            "ở các phase trước."
         ),
     )
     price_target: Optional[float] = Field(

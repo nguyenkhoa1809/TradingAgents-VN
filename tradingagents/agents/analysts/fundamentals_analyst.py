@@ -100,7 +100,7 @@ Run this checklist before forming any earnings-based valuation:
 6. Audit quality: Big4 (Deloitte, KPMG, PwC, EY) or Grant Thornton = higher credibility.
    Mid-year auditor change = flag for investigation.
 
-7. OUTLIER PERIOD DISSECTION (D1): When a quarter/year is an extreme value (highest or
+7. OUTLIER PERIOD DISSECTION: When a quarter/year is an extreme value (highest or
    lowest in the N-period window), you MUST dissect before citing it as evidence:
    (a) Separate core operating profit from: financial income, one-time gains/losses,
        provision reversals, asset revaluation, seasonality effects.
@@ -208,7 +208,7 @@ def create_fundamentals_analyst(llm):
         # Fallback for entry points that didn't pre-compute (tests / bare states).
         if not fin_block and is_vn and _VN_FETCHER_AVAILABLE:
             try:
-                pay = build_financials_payload(ticker)
+                pay = build_financials_payload(ticker, trade_date=str(current_date))
                 if not pay.get("error"):
                     fin_block = pay["block"]
                     chart_json = pay["chart_json"]
@@ -256,17 +256,17 @@ def create_fundamentals_analyst(llm):
                 "## 🎯 Định Giá Hiện Tại (bắt buộc tách 2 lớp)\n"
                 "**LỚP 1 — Giá trị trên số hiện tại (không giả định phục hồi):**\n"
                 "- Áp sector multiple vào TTM/năm gần nhất: P/E × EPS TTM, P/B × BV hiện tại\n"
-                "- Ghi rõ: Fair value L1 = X nghìn đồng → upside L1 = ±Y%\n\n"
+                "- Ghi rõ: Fair value (hiện tại) = X nghìn đồng → upside = ±Y%\n\n"
                 "**LỚP 2 — Upside có điều kiện (chỉ khi có luận điểm phục hồi):**\n"
                 "- Ghi RÕ điều kiện: {swing_variable} giả định ở mức nào, "
                   "LNST/biên forward = X; xác suất kịch bản = Y%\n"
-                "- Ghi rõ: Fair value L2 = X nghìn đồng → upside L2 = ±Y%\n\n"
-                "**⚠️ BẮT BUỘC — nếu L1 upside ≈ 0% (< ±5%) và phần lớn upside nằm ở L2:**\n"
+                "- Ghi rõ: Fair value (kịch bản phục hồi) = X nghìn đồng → upside = ±Y%\n\n"
+                "**⚠️ BẮT BUỘC — nếu upside hiện tại ≈ 0% (< ±5%) và phần lớn upside nằm ở kịch bản phục hồi:**\n"
                 "Mở đầu mục bằng: '📌 Cổ phiếu đang ~fair value trên số hôm nay. "
                   "Đây là kèo phục hồi/optionality — upside phụ thuộc [điều kiện cụ thể].'\n"
-                "KHÔNG được trình bày như 'cổ phiếu rẻ' hay 'định giá hấp dẫn' khi L1 ≈ fair.\n\n"
+                "KHÔNG được trình bày như 'cổ phiếu rẻ' hay 'định giá hấp dẫn' khi định giá hiện tại ≈ fair.\n\n"
                 "**Quy tắc kỹ thuật:**\n"
-                "- Mọi multiple target phải justify: P/B target GẮN ROE forward (B6); "
+                "- Mọi multiple target phải justify: P/B target GẮN ROE forward; "
                   "premium/discount so bình quân phải có lý do tường minh.\n"
                 "- Hướng so sánh đúng số học: nếu target 12.0x thì KHÔNG viết "
                   "'cao hơn hiện tại 13.0x' (12 < 13, mâu thuẫn).\n"
@@ -279,7 +279,7 @@ def create_fundamentals_analyst(llm):
                 "  Đặt tên biến rõ ràng (vd: {swing_variable}).\n\n"
                 "**Bước 2 — Bảng sensitivity (bắt buộc):**\n"
                 "| {swing_variable} | Thay đổi | Biên LN ước tính | LNST ước tính | "
-                  "Fair value (L1) | Upside/Downside |\n"
+                  "Fair value (hiện tại) | Upside/Downside |\n"
                 "|---|---|---|---|---|---|\n"
                 "| Base case | — | ...% | ...tỷ | ...nghìn | ±...% |\n"
                 "| {swing_var} +10% | +10% | ... | ... | ... | ... |\n"
@@ -340,7 +340,7 @@ def create_fundamentals_analyst(llm):
             "5. SENSITIVITY: Identify 1–2 swing variables (biến xoay chuyển thesis). Build sensitivity table "
             "(±10%, ±20% on each) mapping to margin → LNST estimate → fair value → upside. "
             "State the breakeven level where the bull/bear thesis inverts.\n"
-            "6. VALUATION: Two-layer valuation — L1 on current numbers, L2 conditional. "
+            "6. VALUATION: Two-layer valuation — Lớp 1 on current numbers, Lớp 2 conditional. "
             "Compare P/E and P/B to VN sector benchmarks.\n"
             "7. RISKS: Top 3–5 company-specific + macro risks.\n"
             "8. VERDICT: Clear BUY/HOLD/SELL with price-level reasoning.\n"
@@ -390,6 +390,7 @@ def create_fundamentals_analyst(llm):
 
         report = ""
         fundamentals_rating = None
+        fundamentals_reason = None
         if len(result.tool_calls) == 0:
             report = result.content
 
@@ -404,7 +405,7 @@ def create_fundamentals_analyst(llm):
             except Exception:
                 pass  # validator failure must never break the pipeline
 
-            fundamentals_rating = extract_analyst_rating(llm, report)
+            fundamentals_rating, fundamentals_reason = extract_analyst_rating(llm, report)
             # Embed chart data as a comment for render_report.py to extract
             if chart_json:
                 report += f"\n<!-- VN_CHART_DATA {chart_json} -->"
@@ -413,6 +414,7 @@ def create_fundamentals_analyst(llm):
             "messages": [result],
             "fundamentals_report": report,
             "fundamentals_analyst_rating": fundamentals_rating,
+            "fundamentals_analyst_reason": fundamentals_reason,
         }
 
     return fundamentals_analyst_node

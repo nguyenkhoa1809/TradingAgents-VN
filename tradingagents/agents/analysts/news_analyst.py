@@ -108,15 +108,17 @@ def create_news_analyst(llm):
 
         report = ""
         news_rating = None
+        news_reason = None
 
         if len(result.tool_calls) == 0:
             report = result.content
-            news_rating = extract_analyst_rating(llm, report)
+            news_rating, news_reason = extract_analyst_rating(llm, report)
 
         return {
             "messages": [result],
             "news_report": report,
             "news_analyst_rating": news_rating,
+            "news_analyst_reason": news_reason,
         }
 
     return news_analyst_node

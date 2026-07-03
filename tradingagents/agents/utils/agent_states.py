@@ -90,3 +90,14 @@ class AgentState(MessagesState):
     market_analyst_rating: Annotated[Optional[str], "Structured rating from Market Analyst (AnalystSignal.recommendation)"]
     news_analyst_rating: Annotated[Optional[str], "Structured rating from News Analyst"]
     fundamentals_analyst_rating: Annotated[Optional[str], "Structured rating from Fundamentals Analyst"]
+    market_analyst_reason: Annotated[Optional[str], "One-sentence reason from Market Analyst (AnalystSignal.reasoning_summary)"]
+    news_analyst_reason: Annotated[Optional[str], "One-sentence reason from News Analyst"]
+    fundamentals_analyst_reason: Annotated[Optional[str], "One-sentence reason from Fundamentals Analyst"]
+    # Phase-II/III/V structured ratings — extracted from typed Pydantic objects at agent runtime.
+    # Eliminates fragile regex re-extraction at render time for RM, Trader, PM.
+    rm_rating: Annotated[Optional[str], "Structured rating from Research Manager (ResearchPlan.recommendation)"]
+    rm_reason: Annotated[Optional[str], "Rationale from Research Manager (ResearchPlan.rationale)"]
+    trader_rating: Annotated[Optional[str], "Structured rating from Trader (TraderProposal.action)"]
+    trader_reason: Annotated[Optional[str], "Reasoning from Trader (TraderProposal.reasoning)"]
+    pm_rating: Annotated[Optional[str], "Structured rating from Portfolio Manager (PortfolioDecision.rating)"]
+    pm_reason: Annotated[Optional[str], "Executive summary from Portfolio Manager (PortfolioDecision.executive_summary)"]

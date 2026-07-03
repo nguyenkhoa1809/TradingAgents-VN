@@ -395,7 +395,7 @@ class TradingAgentsGraph:
             logger.warning("Could not fetch company profile for %s: %s", ticker, e)
             return ""
 
-    def _resolve_financials(self, ticker: str, asset_type: str = "stock") -> Tuple[str, str]:
+    def _resolve_financials(self, ticker: str, asset_type: str = "stock", trade_date: str | None = None) -> Tuple[str, str]:
         """Compute the canonical financials ONCE at run start (A1 single source of truth).
 
         Python-computed payload (A2/A3) injected into every number-touching
@@ -407,7 +407,7 @@ class TradingAgentsGraph:
             return "", ""
         try:
             from tradingagents.agents.utils.vn_financial_fetcher import build_financials_payload
-            payload = build_financials_payload(ticker)
+            payload = build_financials_payload(ticker, trade_date=trade_date)
             if payload.get("error"):
                 logger.warning("Financials payload for %s failed: %s", ticker, payload["error"])
                 return "", ""
@@ -463,7 +463,7 @@ class TradingAgentsGraph:
         # deterministically resolved instrument identity for all agents.
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
-        financials_block, financials_chart_json = self._resolve_financials(company_name, asset_type)
+        financials_block, financials_chart_json = self._resolve_financials(company_name, asset_type, trade_date=str(trade_date))
         company_profile_block = self._resolve_company_profile(company_name, asset_type)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
@@ -505,12 +505,14 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
-        self.memory_log.store_decision(
-            ticker=company_name,
-            trade_date=trade_date,
-            final_trade_decision=final_state["final_trade_decision"],
-            run_type=run_type,
-        )
+        # Backtest runs do not write to trading_memory — calibration DB is the record.
+        if run_type != "backtest":
+            self.memory_log.store_decision(
+                ticker=company_name,
+                trade_date=trade_date,
+                final_trade_decision=final_state["final_trade_decision"],
+                run_type=run_type,
+            )
 
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):
@@ -550,6 +552,18 @@ class TradingAgentsGraph:
             },
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
+            "market_analyst_rating": final_state.get("market_analyst_rating"),
+            "news_analyst_rating": final_state.get("news_analyst_rating"),
+            "fundamentals_analyst_rating": final_state.get("fundamentals_analyst_rating"),
+            "market_analyst_reason": final_state.get("market_analyst_reason"),
+            "news_analyst_reason": final_state.get("news_analyst_reason"),
+            "fundamentals_analyst_reason": final_state.get("fundamentals_analyst_reason"),
+            "rm_rating": final_state.get("rm_rating"),
+            "rm_reason": final_state.get("rm_reason"),
+            "trader_rating": final_state.get("trader_rating"),
+            "trader_reason": final_state.get("trader_reason"),
+            "pm_rating": final_state.get("pm_rating"),
+            "pm_reason": final_state.get("pm_reason"),
         }
 
         # Save to file. Reject ticker values that would escape the

@@ -80,7 +80,7 @@ Research") TRỪ KHI thông tin đó xuất hiện nguyên văn trong debate/too
 **Debate History:**
 {history}""" + get_language_instruction()
 
-        investment_plan = invoke_structured_or_freetext(
+        investment_plan, rm_obj = invoke_structured_or_freetext(
             structured_llm,
             llm,
             prompt,
@@ -99,6 +99,9 @@ Research") TRỪ KHI thông tin đó xuất hiện nguyên văn trong debate/too
         except Exception:
             pass
 
+        rm_rating = rm_obj.recommendation.value if rm_obj is not None else None
+        rm_reason = rm_obj.rationale if rm_obj is not None else None
+
         new_investment_debate_state = {
             "judge_decision": investment_plan,
             "history": investment_debate_state.get("history", ""),
@@ -111,6 +114,8 @@ Research") TRỪ KHI thông tin đó xuất hiện nguyên văn trong debate/too
         return {
             "investment_debate_state": new_investment_debate_state,
             "investment_plan": investment_plan,
+            "rm_rating": rm_rating,
+            "rm_reason": rm_reason,
         }
 
     return research_manager_node

@@ -85,16 +85,16 @@ def create_portfolio_manager(llm):
    dùng 60/25/15 còn bạn dùng 40/40/20), phải có MỘT câu giải thích vì sao khác
    (khác khung thời gian, khác trọng số rủi ro...) — không để hai bộ mâu thuẫn trống.
 6. ĐỊNH GIÁ 2 LỚP: Kiểm tra xem Lớp 1 (số hiện tại, không giả định phục hồi) cho
-   upside bao nhiêu. Nếu L1 upside ≈ 0% (< ±5%) và phần lớn upside nằm ở kịch bản
-   phục hồi L2 — bắt buộc thừa nhận điều đó ngay đầu quyết định: "Đây là kèo optionality,
-   không phải cổ phiếu rẻ hôm nay." Hạ sizing đợt 1 tương ứng xác suất L2 xảy ra;
-   KHÔNG đặt Buy/Overweight với sizing đầy nếu L1 không có margin of safety.
-7. WHY NOW: Nếu rating là Buy hoặc Overweight, bắt buộc nêu RÕ trong quyết định:
+   upside bao nhiêu. Nếu upside hiện tại ≈ 0% (< ±5%) và phần lớn upside nằm ở kịch bản
+   phục hồi — bắt buộc thừa nhận điều đó ngay đầu quyết định: "Đây là kèo optionality,
+   không phải cổ phiếu rẻ hôm nay." Hạ sizing đợt 1 tương ứng xác suất kịch bản phục hồi xảy ra;
+   KHÔNG đặt Buy/Overweight với sizing đầy nếu số liệu hiện tại không có margin of safety.
+7. TẠI SAO LÀ LÚC NÀY: Nếu rating là Buy hoặc Overweight, bắt buộc nêu RÕ trong quyết định:
    (a) Xúc tác cụ thể gần kỳ (sự kiện/công bố/thời điểm 1–2 quý tới), HOẶC
    (b) Thừa nhận tường minh: "Vị thế kiên nhẫn/optionality — sizing nhỏ, chờ [điều kiện]."
    KHÔNG được phát hành Buy/Overweight mà không có một trong hai. Nếu thiếu xúc tác rõ
    ràng → hạ xuống Hold hoặc Overweight với sizing nhỏ kèm điều kiện kích hoạt.
-8. IMPACT-WEIGHTED RISK: Trước khi confirm rating, rà soát lại rủi ro ĐÃ XÁC NHẬN
+8. ĐÁNH GIÁ RỦI RO THEO TÁC ĐỘNG: Trước khi confirm rating, rà soát lại rủi ro ĐÃ XÁC NHẬN
    và CHƯA GIẢI QUYẾT từ debate. Với mỗi rủi ro loại này: ước tính impact (% fair value
    downside) × xác suất = EV risk. Nếu tổng EV risk > 15% fair value downside, rating
    tối đa là Hold dù số lượng luận điểm Bull nhiều hơn. Ghi rõ phép tính này trong
@@ -110,7 +110,7 @@ def create_portfolio_manager(llm):
 
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
 
-        final_trade_decision = invoke_structured_or_freetext(
+        final_trade_decision, pm_obj = invoke_structured_or_freetext(
             structured_llm,
             llm,
             prompt,
@@ -129,6 +129,9 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         except Exception:
             pass
 
+        pm_rating = pm_obj.rating.value if pm_obj is not None else None
+        pm_reason = pm_obj.executive_summary if pm_obj is not None else None
+
         new_risk_debate_state = {
             "judge_decision": final_trade_decision,
             "history": risk_debate_state["history"],
@@ -145,6 +148,8 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         return {
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
+            "pm_rating": pm_rating,
+            "pm_reason": pm_reason,
         }
 
     return portfolio_manager_node

@@ -77,6 +77,15 @@ class Propagator:
             "market_analyst_rating": None,
             "news_analyst_rating": None,
             "fundamentals_analyst_rating": None,
+            "market_analyst_reason": None,
+            "news_analyst_reason": None,
+            "fundamentals_analyst_reason": None,
+            "rm_rating": None,
+            "rm_reason": None,
+            "trader_rating": None,
+            "trader_reason": None,
+            "pm_rating": None,
+            "pm_reason": None,
         }
 
     def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:

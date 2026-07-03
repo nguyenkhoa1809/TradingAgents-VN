@@ -241,16 +241,16 @@ def fact_check_section(state: Mapping[str, Any]) -> str:
     return f"\n\n{corrections.strip()}\n"
 
 
-def extract_analyst_rating(llm, report_text: str) -> "str | None":
-    """Second-pass extraction of PortfolioRating from a prose analyst report.
+def extract_analyst_rating(llm, report_text: str) -> "tuple[str | None, str | None]":
+    """Second-pass extraction of PortfolioRating + reasoning_summary from a prose analyst report.
 
-    Uses the LLM's with_structured_output to get a reliable enum value.
-    Returns PortfolioRating.value string ("Buy", "Hold", etc.) or None on any failure.
+    Uses the LLM's with_structured_output to get a reliable enum value and one-sentence reason.
+    Returns (rating_value, reasoning_summary) or (None, None) on any failure.
     A failure here never blocks the main agent flow — the summary table will show
     'chưa có dữ liệu' for that row.
     """
     if not report_text or not report_text.strip():
-        return None
+        return None, None
     try:
         from langchain_core.messages import HumanMessage
         from tradingagents.agents.schemas import AnalystSignal
@@ -258,12 +258,12 @@ def extract_analyst_rating(llm, report_text: str) -> "str | None":
         signal = structured_llm.invoke([HumanMessage(content=(
             "Extract the overall investment recommendation from the analyst report below. "
             "Choose the single best fit: Buy / Overweight / Hold / Underweight / Sell. "
-            "Summarize the primary reason in ≤15 words.\n\n"
+            "Summarize the primary reason in ≤15 words. Viết lý do bằng tiếng Việt.\n\n"
             f"{report_text[:4000]}"
         ))])
-        return signal.recommendation.value
+        return signal.recommendation.value, signal.reasoning_summary
     except Exception:
-        return None
+        return None, None
 
 
 def create_msg_delete():

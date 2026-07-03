@@ -131,10 +131,11 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
 
         report = ""
         market_rating = None
+        market_reason = None
 
         if len(result.tool_calls) == 0:
             report = result.content
-            market_rating = extract_analyst_rating(llm, report)
+            market_rating, market_reason = extract_analyst_rating(llm, report)
             # Embed technical chart data for render_report.py to draw BSR-style charts
             if tech_chart_json:
                 report += f"\n<!-- VN_TECH_DATA {tech_chart_json} -->"
@@ -143,6 +144,7 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
             "messages": [result],
             "market_report": report,
             "market_analyst_rating": market_rating,
+            "market_analyst_reason": market_reason,
         }
 
     return market_analyst_node

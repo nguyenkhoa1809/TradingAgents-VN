@@ -437,15 +437,23 @@ def validate_report(sections: dict[str, str], financials: dict | None = None) ->
                     f"[{key}] Multiple direction sai: '{snippet}' "
                     f"({n1}x không {direction} {n2}x)"
                 )
+    # G3: Trader input must be present and non-stub when PM runs
+    _trader_text = sections.get("trader_investment_plan", "").strip()
+    if not _trader_text or "[MISSING" in _trader_text:
+        warnings.append(
+            "[trader_investment_plan] MISSING — Trader phase produced no output; "
+            "PM decision is based on incomplete upstream input"
+        )
+
     # E2: PM **Rating** field must match what detect_signal extracts for the banner
     pm_text = sections.get("final_trade_decision", "")
     if pm_text:
         _pm_rating_m = _re.search(
-            r'\*\*Rating\*\*\s*:\s*(Buy|Overweight|Hold|Underweight|Sell)',
+            r'\*\*Rating\*\*\s*:\s*(Strong\s+Buy|Strong\s+Sell|Buy|Overweight|Hold|Underweight|Sell|Neutral)',
             pm_text, _re.IGNORECASE
         )
         if _pm_rating_m:
-            _pm_field = _pm_rating_m.group(1).strip().upper()
+            _pm_field = _re.sub(r"\s+", " ", _pm_rating_m.group(1).strip().upper())
             _banner_signal = detect_signal(pm_text)[3].upper()
             if _banner_signal not in ("PENDING", "UNKNOWN") and _pm_field != _banner_signal:
                 warnings.append(
@@ -605,6 +613,7 @@ CSS = """
   --fs-lg: 19px;
   --fs-xl: 23px;
   --fs-x2: 28px;
+  --fs-title: clamp(32px, 5vw, 52px);
   --fs-display: 46px;
   --radius-sm:    6px;
   --radius-md:    12px;
@@ -688,6 +697,7 @@ body::before {
 .header-signal-box .sig-label-sm { font-size: var(--fs-caption); letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; opacity: 0.85; }
 .header-signal-box .sig-value { font-size: var(--fs-display); font-weight: 900; letter-spacing: -0.01em; line-height: 1; }
 .header-signal-box .sig-date { font-size: var(--fs-small); font-weight: 500; opacity: 0.8; margin-top: 5px; }
+.header-signal-box .sig-conviction { font-size: var(--fs-small); font-weight: 700; letter-spacing: 0.06em; margin-top: 4px; }
 
 @media (max-width: 720px) {
   .report-header { flex-direction: column; align-items: flex-start; gap: 20px; padding: 28px 22px; }
@@ -756,7 +766,7 @@ body::before {
 }
 
 .report-title {
-  font-size: clamp(32px, 5vw, 52px);
+  font-size: var(--fs-title);
   font-weight: 800;
   letter-spacing: -0.03em;
   line-height: 1.1;
@@ -1554,8 +1564,10 @@ table.art-tbl tr:hover td { background: rgba(255,255,255,0.02); }
 .art-pill-underweight{color: #fca5a5; background: rgba(252,165,165,0.13); border-color: rgba(252,165,165,0.4); }
 .art-pill-sell      { color: #f87171; background: rgba(248,113,113,0.14); border-color: rgba(248,113,113,0.4); }
 .art-pill-missing   { color: var(--text-muted); background: transparent; border-color: var(--border); font-style: italic; }
-.art-role-interim { font-size: var(--fs-caption); color: var(--text-muted); }
+.art-role-interim { font-size: var(--fs-caption); color: var(--text-muted); opacity: 0.6; }
 .art-role-final   { font-size: var(--fs-caption); font-weight: 700; color: var(--accent-pink); letter-spacing: 0.04em; }
+.art-reason       { font-size: var(--fs-small); color: var(--text-secondary); }
+.art-reason-empty { opacity: 0.35; }
 .art-override-badge {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: var(--fs-caption); font-weight: 700; letter-spacing: 0.05em;
@@ -1589,13 +1601,24 @@ function setActive(id) {
     });
 }
 
-const observer = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-        if (entry.isIntersecting) setActive(entry.target.id);
+// Scroll-based spy: active = last section whose top has passed the trigger line.
+// IntersectionObserver misfires on long sections (next section peeks in before
+// user finishes reading current one, flipping the active tab prematurely).
+const NAV_H = 60; // approx topnav height px
+function updateActiveNav() {
+    const trigger = NAV_H + 20;
+    let best = null;
+    sections.forEach(s => {
+        const top = s.getBoundingClientRect().top;
+        if (top <= trigger) {
+            if (!best || top > best.top) best = { id: s.id, top };
+        }
     });
-}, { threshold: 0.1, rootMargin: '-80px 0px -55% 0px' });
-
-sections.forEach(s => observer.observe(s));
+    const id = best ? best.id : (sections[0] ? sections[0].id : null);
+    if (id) setActive(id);
+}
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+updateActiveNav();
 
 // Animate stats numbers
 document.querySelectorAll('.stat-value[data-target]').forEach(el => {
@@ -2250,10 +2273,11 @@ def _build_technical_block(td: dict) -> str:
     )
 
 
+_ALL_RATINGS = r'(Strong\s+Buy|Strong\s+Sell|Buy|Overweight|Hold|Underweight|Sell|Neutral)'
 _RATING_RE = {
-    "investment_plan":        _re.compile(r'\*\*Recommendation\*\*\s*:\s*(Buy|Overweight|Hold|Underweight|Sell)', _re.IGNORECASE),
-    "trader_investment_plan": _re.compile(r'\*\*Action\*\*\s*:\s*(Buy|Hold|Sell)', _re.IGNORECASE),
-    "final_trade_decision":   _re.compile(r'\*\*Rating\*\*\s*:\s*(Buy|Overweight|Hold|Underweight|Sell)', _re.IGNORECASE),
+    "investment_plan":        _re.compile(r'\*\*Recommendation\*\*\s*:\s*' + _ALL_RATINGS, _re.IGNORECASE),
+    "trader_investment_plan": _re.compile(r'\*\*Action\*\*\s*:\s*' + _ALL_RATINGS, _re.IGNORECASE),
+    "final_trade_decision":   _re.compile(r'\*\*Rating\*\*\s*:\s*' + _ALL_RATINGS, _re.IGNORECASE),
 }
 
 _PILL_CLS = {
@@ -2262,6 +2286,9 @@ _PILL_CLS = {
     "hold": "art-pill-hold",
     "underweight": "art-pill-underweight",
     "sell": "art-pill-sell",
+    "strong buy": "art-pill-buy",
+    "strong sell": "art-pill-sell",
+    "neutral": "art-pill-hold",
 }
 
 def _rating_pill(value: str | None) -> str:
@@ -2276,28 +2303,141 @@ def _rating_direction(r: str | None) -> str | None:
     if not r:
         return None
     r = r.strip().upper()
-    if r in ("BUY", "OVERWEIGHT"):
+    if r in ("BUY", "OVERWEIGHT", "STRONG BUY"):
         return "positive"
-    if r in ("SELL", "UNDERWEIGHT"):
+    if r in ("SELL", "UNDERWEIGHT", "STRONG SELL"):
         return "negative"
-    if r == "HOLD":
+    if r in ("HOLD", "NEUTRAL"):
         return "neutral"
     return None
+
+
+# E1: label map for prefixing intermediate-phase signal/recommendation/action fields
+_E1_LABEL_MAP: dict[str, tuple[str, str]] = {
+    "market_report":          ("Signal",         "Market Analyst"),
+    "sentiment_report":       ("Signal",         "Sentiment Analyst"),
+    "news_report":            ("Signal",         "News Analyst"),
+    "fundamentals_report":    ("Signal",         "Fundamentals Analyst"),
+    "investment_plan":        ("Recommendation", "Research Team"),
+    "trader_investment_plan": ("Action",         "Trader"),
+    # final_trade_decision (Phase V) keeps **Rating**: as authoritative label
+}
+
+
+def _prefix_section_rating(key: str, text: str) -> str:
+    """E1: rewrite intermediate-phase signal/rec/action field labels to include agent name."""
+    entry = _E1_LABEL_MAP.get(key)
+    if not entry:
+        return text
+    field, agent = entry
+    return _re.sub(
+        rf'(?m)^\*\*{field}\*\*(\s*:\s*)',
+        lambda m: f'**Đề xuất từ {agent}**{m.group(1)}',
+        text,
+    )
+
+
+# E3: extract ≤15-word reason from structured output fields in each section
+_REASON_RE: dict[str, _re.Pattern] = {
+    "market_report":          _re.compile(r'\*\*Signal\*\*\s*:\s*\S+\s*[—\-]\s*(.+)', _re.IGNORECASE),
+    "sentiment_report":       _re.compile(r'\*\*Signal\*\*\s*:\s*\S+\s*[—\-]\s*(.+)', _re.IGNORECASE),
+    "news_report":            _re.compile(r'\*\*Signal\*\*\s*:\s*\S+\s*[—\-]\s*(.+)', _re.IGNORECASE),
+    "fundamentals_report":    _re.compile(r'\*\*Signal\*\*\s*:\s*\S+\s*[—\-]\s*(.+)', _re.IGNORECASE),
+    "investment_plan":        _re.compile(r'\*\*Rationale\*\*\s*:\s*(.+)', _re.IGNORECASE),
+    "trader_investment_plan": _re.compile(r'\*\*Reasoning\*\*\s*:\s*(.+)', _re.IGNORECASE),
+    "final_trade_decision":   _re.compile(r'\*\*Executive\s+Summary\*\*\s*:\s*(.+)', _re.IGNORECASE),
+}
+
+
+_RM_CONCLUSION_RE = _re.compile(
+    r'Kết\s+luận(?:\s+cuối\s+cùng)?\s*:\*{0,2}\s*(?:UNDERWEIGHT|OVERWEIGHT|BUY|SELL|HOLD)\s+\S+\.\s*(.+)',
+    _re.IGNORECASE
+)
+
+
+def _short_reason(text: str | None, max_chars: int = 130) -> str | None:
+    """Truncate to first sentence (≤max_chars). Used for long Phase-II/III/V reasons."""
+    if not text:
+        return None
+    text = text.strip()
+    m = _re.search(r'(?<=[.!?])\s', text)
+    if m and m.start() <= max_chars + 40:
+        snippet = text[:m.start()].strip()
+    else:
+        snippet = text
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars].rstrip() + '…'
+    return snippet or None
+
+
+def _extract_reason(key: str, sections: dict) -> str:
+    """Extract a ≤15-word reason from a section's structured output fields."""
+    text = sections.get(key, "")
+    if not text:
+        return ""
+    pat = _REASON_RE.get(key)
+    if not pat:
+        return ""
+    m = pat.search(text)
+    if not m:
+        # RM freetext fallback: "Kết luận cuối cùng: UNDERWEIGHT VPB. Lý do..."
+        if key == "investment_plan":
+            m2 = _RM_CONCLUSION_RE.search(text)
+            if m2:
+                words = m2.group(1).strip().split()
+                snippet = " ".join(words[:15])
+                return snippet + ("…" if len(words) > 15 else "")
+        return ""
+    words = m.group(1).strip().split()
+    snippet = " ".join(words[:15])
+    return snippet + ("…" if len(words) > 15 else "")
+
+
+_ANALYST_SIGNAL_RE = _re.compile(r'\*\*Signal\*\*\s*:\s*' + _ALL_RATINGS, _re.IGNORECASE)
+_SENTIMENT_SIGNAL_RE = _re.compile(
+    r'\*\*Overall\s+Sentiment\*\*[^:]*:\s*\*{0,2}(' +
+    r'Bullish|Mildly Bullish|Neutral|Mixed|Mildly Bearish|Bearish' +
+    r')\*{0,2}', _re.IGNORECASE
+)
+_SENTIMENT_TO_RATING = {
+    "bullish": "Overweight", "mildly bullish": "Overweight",
+    "neutral": "Hold", "mixed": "Hold",
+    "mildly bearish": "Underweight", "bearish": "Sell",
+}
+
+
+def _extract_phase1_rating(text: str, is_sentiment: bool = False) -> str | None:
+    """Extract rating from a Phase-I analyst section text.
+
+    Used as fallback when agent_ratings is not available (e.g. render-only mode).
+    Each analyst prepends **Signal**: X — ... via render_analyst_signal(), so this
+    is reliable when structured output succeeded.
+    """
+    if not text:
+        return None
+    if is_sentiment:
+        m = _SENTIMENT_SIGNAL_RE.search(text)
+        if m:
+            return _SENTIMENT_TO_RATING.get(m.group(1).lower(), m.group(1).title())
+        return None
+    m = _ANALYST_SIGNAL_RE.search(text)
+    return m.group(1) if m else None
 
 
 def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | None) -> str:
     """E3: build the agent-rating summary table HTML.
 
-    Phase-I ratings come from `agent_ratings` dict (structured extraction result).
-    None → "chưa có dữ liệu". NO heuristic fallback.
-    Phase-II/III/V ratings come from reliable structured-output header lines.
+    Phase-I ratings: prefer agent_ratings dict (set during live pipeline run);
+    fall back to parsing **Signal**: X from the section text (available in
+    render-only / recover mode where agent_ratings is not persisted).
+    Phase-II/III/V ratings come from structured-output header lines.
     """
     ar = agent_ratings or {}
 
-    # Phase-I: structured extraction (no regex fallback on None)
-    market_r  = ar.get("market")       # str | None
-    news_r    = ar.get("news")         # str | None
-    funds_r   = ar.get("fundamentals") # str | None
+    # Phase-I: live structured extraction, fallback to section-text parse
+    market_r  = ar.get("market")       or _extract_phase1_rating(sections.get("market_report", ""))
+    news_r    = ar.get("news")         or _extract_phase1_rating(sections.get("news_report", ""))
+    funds_r   = ar.get("fundamentals") or _extract_phase1_rating(sections.get("fundamentals_report", ""))
 
     # Phase-II/III/V: parse guaranteed structured output headers
     def _extract(key):
@@ -2305,11 +2445,40 @@ def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | No
         if not text:
             return None
         m = _RATING_RE.get(key, _re.compile(r"(?!x)x")).search(text)
-        return m.group(1) if m else None
+        if m:
+            return m.group(1)
+        # Trader freetext fallback: DeepSeek Flash often returns Vietnamese prose
+        # instead of structured output (e.g. "FINAL TRANSACTION PROPOSAL: **MUA**").
+        if key == "trader_investment_plan":
+            _VN_EN = {"MUA": "Buy", "BÁN": "Sell", "GIỮ NGUYÊN": "Hold", "NẮM GIỮ": "Hold", "GIỮ": "Hold"}
+            # 1. Search for the FINAL TRANSACTION PROPOSAL line anywhere in text
+            final_m = _re.search(
+                r'FINAL\s+TRANSACTION\s+PROPOSAL\s*:\s*\*{0,2}\s*(.+?)\s*\*{0,2}\s*$',
+                text, _re.MULTILINE | _re.IGNORECASE
+            )
+            if final_m:
+                word = final_m.group(1).strip()
+                return _VN_EN.get(word.upper(), word.title())
+            # 2. Headline scan (first 300 chars) with Vietnamese → English normalization
+            head = text[:300]
+            head = _re.sub(r'\bMUA\b', 'BUY', head, flags=_re.IGNORECASE)
+            head = _re.sub(r'\bBÁN\b', 'SELL', head, flags=_re.IGNORECASE)
+            head = _re.sub(r'\b(?:NẮM\s*GIỮ|GIỮ\s*NGUYÊN|GIỮ)\b', 'HOLD', head, flags=_re.IGNORECASE)
+            sig = detect_signal(head)[3]
+            return sig if sig not in ("UNKNOWN", "PENDING") else None
+        # RM freetext fallback: structured output failed, DeepSeek Pro returned Vietnamese prose.
+        # Try without bold markers, then scan last 800 chars (conclusion area).
+        if key == "investment_plan":
+            m2 = _re.search(r'Recommendation\s*:\s*' + _ALL_RATINGS, text, _re.IGNORECASE)
+            if m2:
+                return m2.group(1)
+            sig = detect_signal(text[-800:])[3]
+            return sig if sig not in ("UNKNOWN", "PENDING") else None
+        return None
 
-    rm_r     = _extract("investment_plan")
-    trader_r = _extract("trader_investment_plan")
-    pm_r     = _extract("final_trade_decision")
+    rm_r     = ar.get("rm")     or _extract("investment_plan")
+    trader_r = ar.get("trader") or _extract("trader_investment_plan")
+    pm_r     = ar.get("pm")     or _extract("final_trade_decision")
 
     # PM override đa số: normalize to direction, check if PM disagrees with ≥3 of the 5 others
     others = [market_r, news_r, funds_r, rm_r, trader_r]
@@ -2326,27 +2495,33 @@ def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | No
             )
 
     rows = [
-        ("📈", "Market Analyst",        market_r,  False),
-        ("📰", "News Analyst",          news_r,    False),
-        ("🏦", "Fundamentals Analyst",  funds_r,   False),
-        ("🔬", "Research Manager",      rm_r,      False),
-        ("⚡", "Trader",               trader_r,  False),
-        ("🎯", "Portfolio Manager",     pm_r,      True),
+        ("📈", "Market Analyst",        market_r,  False, "market_report",          ar.get("market_reason")),
+        ("📰", "News Analyst",          news_r,    False, "news_report",            ar.get("news_reason")),
+        ("🏦", "Fundamentals Analyst",  funds_r,   False, "fundamentals_report",    ar.get("fundamentals_reason")),
+        ("🔬", "Research Manager",      rm_r,      False, "investment_plan",        ar.get("rm_reason")),
+        ("⚡", "Trader",               trader_r,  False, "trader_investment_plan", ar.get("trader_reason")),
+        ("🎯", "Portfolio Manager",     pm_r,      True,  "final_trade_decision",   ar.get("pm_reason")),
     ]
 
     tbody = ""
-    for icon, name, rating, is_pm in rows:
+    for icon, name, rating, is_pm, sec_key, reason_override in rows:
         tr_cls = ' class="art-pm"' if is_pm else ""
-        role_html = (
+        role_badge = (
             '<span class="art-role-final">Final Signal</span>'
             if is_pm else
-            '<span class="art-role-interim">Đề xuất tạm</span>'
+            '<span class="art-role-interim">tạm</span>'
+        )
+        reason = _short_reason(reason_override) or _extract_reason(sec_key, sections)
+        reason_html = (
+            f'<span class="art-reason">{_html.escape(reason)}</span>'
+            if reason else
+            '<span class="art-reason art-reason-empty">—</span>'
         )
         tbody += (
             f"<tr{tr_cls}>"
-            f"<td><span class='art-agent'>{icon} {_html.escape(name)}</span></td>"
+            f"<td><span class='art-agent'>{icon} {_html.escape(name)}</span> {role_badge}</td>"
             f"<td>{_rating_pill(rating)}</td>"
-            f"<td>{role_html}</td>"
+            f"<td>{reason_html}</td>"
             "</tr>\n"
         )
 
@@ -2359,7 +2534,7 @@ def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | No
         '</div>'
         '<div class="art-body">'
         '<table class="art-tbl"><thead>'
-        '<tr><th>Agent</th><th>Khuyến nghị</th><th>Vai trò</th></tr>'
+        '<tr><th>Agent</th><th>Khuyến nghị</th><th>Tóm tắt lý do</th></tr>'
         '</thead><tbody>'
         f'{tbody}'
         '</tbody></table>'
@@ -2385,6 +2560,21 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
     if sections.get("final_trade_decision"):
         signal_emoji, signal_fg, signal_bg, signal_label = detect_signal(sections["final_trade_decision"])
 
+    # G2: extract Conviction label from PM structured output
+    _conv_m = _re.search(
+        r'\*\*Conviction\*\*\s*:\s*(CAO|TRUNG\s+BÌNH|THẤP)',
+        sections.get("final_trade_decision", ""),
+        _re.IGNORECASE,
+    )
+    conviction_label = _re.sub(r"\s+", " ", _conv_m.group(1).upper()) if _conv_m else ""
+    _CONV_COLOR = {"CAO": "#10b981", "TRUNG BÌNH": "#f59e0b", "THẤP": "#ef4444"}
+    conviction_html = (
+        f'<div class="sig-conviction" style="color:{_CONV_COLOR.get(conviction_label, signal_fg)}">'
+        f'Conviction: {_html.escape(conviction_label)}'
+        f'</div>'
+        if conviction_label else ""
+    )
+
     # E3: Agent rating summary table (Phase-I from agent_ratings, Phase-II/III/V from text)
     agent_rating_table_html = _build_agent_rating_table(sections, agent_ratings)
 
@@ -2398,6 +2588,16 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
         _exec_md, _f = _extract_executive_summary(_f)
         work_sections["fundamentals_report"] = _f
         if _exec_md:
+            # Sync "Khuyến nghị" line to PM's final signal so exec summary
+            # doesn't contradict the Final Signal badge below it.
+            _pm_signal = detect_signal(sections.get("final_trade_decision", ""))[3]
+            if _pm_signal not in ("UNKNOWN", "PENDING"):
+                _exec_md = _re.sub(
+                    r'(\*{0,2}Khuyến\s+nghị\*{0,2}\s*:\s*)[^\n]+',
+                    lambda m: m.group(1) + _pm_signal,
+                    _exec_md,
+                    count=1,
+                )
             exec_hero_html = (
                 '<section class="exec-hero">'
                 '<div class="exec-hero-head"><span class="eh-icon">📋</span>'
@@ -2479,6 +2679,7 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
         if key == "news_report":
             content = enhance_news_digest(content)
 
+        content = _prefix_section_rating(key, content)  # E1: label intermediate ratings
         body_html = md_to_html(content)
 
         # Icon background gradient
@@ -2529,6 +2730,8 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
             chips.append(f'<span class="model-chip"><span class="chip-label">Deep:</span>{model_info["deep_think_llm"]}</span>')
         if model_info.get("quick_think_llm") and model_info.get("quick_think_llm") != model_info.get("deep_think_llm"):
             chips.append(f'<span class="model-chip"><span class="chip-label">Quick:</span>{model_info["quick_think_llm"]}</span>')
+        if model_info.get("refine_llm"):
+            chips.append(f'<span class="model-chip"><span class="chip-label">Refine:</span>{model_info["refine_llm"]}</span>')
         if cost_str:
             chips.append(f'<span class="cost-chip">💰 {cost_str}</span>')
         model_info_html = f'<div class="header-models">{"".join(chips)}</div>'
@@ -2590,6 +2793,7 @@ def build_html(ticker: str, analysis_date: str, sections: dict[str, str], genera
       <div class="sig-emoji">{signal_emoji}</div>
       <div class="sig-label-sm">Final Signal</div>
       <div class="sig-value">{signal_label}</div>
+      {conviction_html}
       <div class="sig-date">{analysis_date}</div>
     </div>
   </header>

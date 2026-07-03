@@ -54,7 +54,7 @@ def create_trader(llm):
             },
         ]
 
-        trader_plan = invoke_structured_or_freetext(
+        trader_plan, trader_obj = invoke_structured_or_freetext(
             structured_llm,
             llm,
             messages,
@@ -72,9 +72,14 @@ def create_trader(llm):
                 len(trader_plan) if trader_plan else 0,
             )
 
+        trader_rating = trader_obj.action.value if trader_obj is not None else None
+        trader_reason = trader_obj.reasoning if trader_obj is not None else None
+
         return {
             "messages": [AIMessage(content=trader_plan)],
             "trader_investment_plan": trader_plan,
+            "trader_rating": trader_rating,
+            "trader_reason": trader_reason,
             "sender": name,
         }
 
