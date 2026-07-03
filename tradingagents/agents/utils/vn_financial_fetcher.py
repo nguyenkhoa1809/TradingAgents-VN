@@ -102,6 +102,7 @@ def fetch_vn_financial_context(
     source: str = "VCI",
     n_years: int = 5,
     n_quarters: int = 10,
+    trade_date: str | None = None,
 ) -> dict:
     """
     Fetch financial data and return:
@@ -120,8 +121,9 @@ def fetch_vn_financial_context(
 
     try:
         f = Finance(symbol=symbol, source=source)
-        today = datetime.today().strftime("%Y-%m-%d")
-        one_yr_ago = f"{datetime.today().year - 1}-01-01"
+        today = trade_date or datetime.today().strftime("%Y-%m-%d")
+        _today_dt = datetime.strptime(today, "%Y-%m-%d")
+        one_yr_ago = f"{_today_dt.year - 1}-01-01"
 
         ratio_raw = _safe(f.ratio)
         inc_raw   = _safe(f.income_statement)
@@ -383,7 +385,7 @@ FCF) đã được tính sẵn bằng máy — chỉ diễn giải, không tính
 """
 
 
-def build_financials_payload(symbol: str, source: str = "VCI") -> dict:
+def build_financials_payload(symbol: str, source: str = "VCI", trade_date: str | None = None) -> dict:
     """Canonical financial payload — MỘT nguồn số duy nhất cho mọi agent (A1).
 
     Tất cả số/tỷ số được tính sẵn ở Python layer (A2); FCF = CFO − CapEx (A3).
@@ -394,7 +396,7 @@ def build_financials_payload(symbol: str, source: str = "VCI") -> dict:
         is_bank     : bool
         error       : str | None
     """
-    ctx = fetch_vn_financial_context(symbol, source=source)
+    ctx = fetch_vn_financial_context(symbol, source=source, trade_date=trade_date)
     if ctx.get("error") or not ctx.get("summary_md"):
         return {"block": "", "chart_json": ctx.get("chart_json", ""), "data": {},
                 "is_bank": ctx.get("is_bank", False), "error": ctx.get("error") or "no data"}
