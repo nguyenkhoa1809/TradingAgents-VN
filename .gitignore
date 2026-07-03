@@ -232,3 +232,4 @@ test_prompts.py
 # Generated report output directories (run render_report.py to view)
 demo_report/
 reports/
+tradingagents_fixes_v2.md
