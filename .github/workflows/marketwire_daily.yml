@@ -34,6 +34,14 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
+      - name: Install Playwright browsers
+        # crawl4ai (requirements.txt) cần Chromium thật cho các nguồn kind: scrape
+        # (vd SBV — không có RSS, phải scrape trang JS-rendered). pip install chỉ
+        # cài package Python, không tự tải browser binary — thiếu bước này thì
+        # mọi nguồn scrape sẽ fail trên runner sạch (ubuntu-latest không có sẵn).
+        working-directory: marketwire
+        run: python -m playwright install chromium --with-deps
+
       - name: Run MarketWire pipeline
         working-directory: marketwire
         run: python scripts/run_daily.py
