@@ -1,0 +1,60 @@
+name: MarketWire Daily
+
+on:
+  schedule:
+    # Cron luôn tính UTC — ICT = UTC+7, buổi tối UTC hôm trước = buổi sáng ICT hôm sau.
+    - cron: '30 23 * * 0-4'  # 06:30 ICT thứ 2-6 (bắt overnight US)
+    - cron: '30 8 * * 1-5'   # 15:30 ICT thứ 2-6 (sau EU mở cửa)
+  workflow_dispatch:          # trigger thủ công
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          # requirements.txt nằm trong marketwire/, không phải repo root —
+          # chỉ định rõ để cache key tính đúng.
+          cache-dependency-path: marketwire/requirements.txt
+
+      - name: Install dependencies
+        working-directory: marketwire
+        run: pip install -r requirements.txt
+
+      - name: Download DB from R2
+        working-directory: marketwire
+        run: python scripts/db_sync.py download
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+      - name: Run MarketWire pipeline
+        working-directory: marketwire
+        run: python scripts/run_daily.py
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Upload DB to R2
+        if: always()  # upload kể cả khi pipeline partial fail — không mất data đã fetch
+        working-directory: marketwire
+        run: python scripts/db_sync.py upload
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+      - name: Deploy web to Cloudflare Pages
+        if: success()  # chỉ deploy khi KHÔNG có step nào trước đó fail (vd migrate.py — bước critical duy nhất)
+        working-directory: marketwire
+        run: npx wrangler pages deploy web/dist --project-name=marketwire
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
