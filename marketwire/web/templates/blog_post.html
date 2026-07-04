@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<article class="article">
+  <h2 style="margin-top:0">{{ post.title }}</h2>
+  <div class="meta">
+    {{ post.date }} • <span class="tag">{{ post.lang|upper }}</span>
+  </div>
+  <div class="tags">
+    {% for t in post.tags %}<span class="tag">{{ t }}</span>{% endfor %}
+  </div>
+  <div class="blog-content">
+    {{ post.content_html|safe }}
+  </div>
+</article>
+<p><a href="index.html">&larr; Quay lại Blog</a></p>
+{% endblock %}

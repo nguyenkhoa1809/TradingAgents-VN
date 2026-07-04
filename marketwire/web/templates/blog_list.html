@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 style="margin-top:0">{{ title }}</h2>
+<p style="color:var(--muted);font-size:13px">{{ posts|length }} bài viết</p>
+
+{% for p in posts %}
+<article class="article">
+  <h2><a href="{{ p.slug }}.html">{{ p.title }}</a></h2>
+  <div class="meta">
+    {{ p.date }} • <span class="tag">{{ p.lang|upper }}</span>
+  </div>
+  {% if p.excerpt %}<div class="summary">{{ p.excerpt }}</div>{% endif %}
+  <div class="tags">
+    {% for t in p.tags %}<span class="tag">{{ t }}</span>{% endfor %}
+  </div>
+</article>
+{% endfor %}
+{% endblock %}

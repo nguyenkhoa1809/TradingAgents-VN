@@ -7,12 +7,15 @@ Pages:
 - briefing.html: morning briefing = wavy signals + sell-side + ★4+ news
 - expert/<slug>.html: per-expert feed
 - daily/YYYY-MM-DD.html: digest theo ngày
+- blog/index.html, blog/<slug>.html: bài viết Markdown trong blog/posts/
 """
 import json
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from collections import defaultdict
 
+import frontmatter
+import markdown as md_lib
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "ingest"))
@@ -21,6 +24,8 @@ from db import conn
 ROOT = Path(__file__).parent
 DIST = ROOT / "dist"
 TPL = ROOT / "templates"
+BLOG_POSTS_DIR = ROOT.parent / "blog" / "posts"
+BLOG_DIST = DIST / "blog"
 
 env = Environment(
     loader=FileSystemLoader(TPL),
@@ -56,6 +61,7 @@ def render_all():
     DIST.mkdir(exist_ok=True)
     (DIST / "expert").mkdir(exist_ok=True)
     (DIST / "daily").mkdir(exist_ok=True)
+    BLOG_DIST.mkdir(exist_ok=True)
 
     window = "a.published >= datetime('now', '-24 hours')"
     imp_then_time = "COALESCE(a.importance,0) DESC, a.published DESC"
@@ -109,7 +115,7 @@ def render_all():
         (DIST / "expert" / f"{slugify(name)}.html").write_text(
             env.get_template("feed.html").render(
                 title=f"MarketWire — {name}",
-                articles=arts, nav_active="expert",
+                articles=arts, nav_active="expert", nav_prefix="../",
             ), encoding="utf-8"
         )
 
@@ -122,12 +128,59 @@ def render_all():
         (DIST / "daily" / f"{d.isoformat()}.html").write_text(
             env.get_template("daily.html").render(
                 title=f"Digest {d.isoformat()}",
-                articles=arts, the_date=d,
+                articles=arts, the_date=d, nav_prefix="../",
             ), encoding="utf-8"
         )
 
     render_briefing(today=date.today())
+    render_blog()
     print(f"Rendered {len(all_articles)} articles to {DIST}")
+
+
+def _load_blog_posts() -> list:
+    """Đọc + parse mọi .md trong blog/posts/, sort theo date giảm dần."""
+    if not BLOG_POSTS_DIR.exists():
+        return []
+    posts = []
+    for md_path in sorted(BLOG_POSTS_DIR.glob("*.md")):
+        post = frontmatter.load(md_path)
+        html_content = md_lib.markdown(
+            post.content, extensions=["tables", "fenced_code", "nl2br"]
+        )
+        date_val = post.get("date")
+        date_str = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
+        posts.append({
+            "slug": md_path.stem,  # tên file (không .md) — trùng luôn tên output .html
+            "title": post.get("title", md_path.stem),
+            "date": date_str,
+            "tags": post.get("tags", []),
+            "lang": post.get("lang", "vi"),
+            "excerpt": post.get("excerpt", ""),
+            "content_html": html_content,
+        })
+    posts.sort(key=lambda p: p["date"], reverse=True)
+    return posts
+
+
+def render_blog() -> None:
+    """Render blog/index.html (listing) + blog/<slug>.html (từng bài)."""
+    posts = _load_blog_posts()
+    BLOG_DIST.mkdir(parents=True, exist_ok=True)
+
+    (BLOG_DIST / "index.html").write_text(
+        env.get_template("blog_list.html").render(
+            title="MarketWire — Blog", posts=posts,
+            nav_active="blog", nav_prefix="../",
+        ), encoding="utf-8"
+    )
+    for post in posts:
+        (BLOG_DIST / f"{post['slug']}.html").write_text(
+            env.get_template("blog_post.html").render(
+                title=f"MarketWire — {post['title']}", post=post,
+                nav_active="blog", nav_prefix="../",
+            ), encoding="utf-8"
+        )
+    print(f"[blog] Rendered {len(posts)} post(s) to {BLOG_DIST}")
 
 
 def render_briefing(today: date = None):

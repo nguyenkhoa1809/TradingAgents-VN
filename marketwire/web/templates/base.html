@@ -34,16 +34,34 @@
   .tag { display:inline-block; padding:2px 8px; margin:2px 4px 2px 0; border-radius:10px;
          background:var(--border); font-size:11px; color:var(--muted); }
   .tag.ticker { background:var(--accent); color:#fff; font-weight:600; }
+
+  /* Prose content (blog posts) — tái dùng biến màu hiện có, không tạo palette mới */
+  .blog-content { line-height:1.7; }
+  .blog-content h1, .blog-content h2, .blog-content h3 { color:var(--ink); margin:24px 0 10px; }
+  .blog-content h1 { font-size:22px; }
+  .blog-content h2 { font-size:19px; }
+  .blog-content h3 { font-size:16px; }
+  .blog-content p { margin:12px 0; }
+  .blog-content a { color:var(--accent); }
+  .blog-content ul, .blog-content ol { padding-left:22px; }
+  .blog-content li { margin:4px 0; }
+  .blog-content code { background:var(--border); padding:1px 5px; border-radius:4px; font-size:13px; }
+  .blog-content pre { background:var(--border); padding:12px; border-radius:8px; overflow-x:auto; }
+  .blog-content pre code { background:none; padding:0; }
+  .blog-content blockquote { border-left:3px solid var(--accent); margin:12px 0; padding-left:12px; color:var(--muted); }
+  .blog-content table { border-collapse:collapse; width:100%; margin:12px 0; }
+  .blog-content th, .blog-content td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
 </style>
 </head>
 <body>
 <header>
   <h1>📈 MarketWire</h1>
   <nav>
-    <a href="briefing.html" class="{% if nav_active=='briefing' %}active{% endif %}">🌅 Briefing</a>
-    <a href="index.html" class="{% if nav_active=='index' %}active{% endif %}">Mới nhất</a>
-    <a href="important.html" class="{% if nav_active=='important' %}active{% endif %}">★4+</a>
-    <a href="portfolio.html" class="{% if nav_active=='portfolio' %}active{% endif %}">Universe</a>
+    <a href="{{ nav_prefix|default('') }}briefing.html" class="{% if nav_active=='briefing' %}active{% endif %}">🌅 Briefing</a>
+    <a href="{{ nav_prefix|default('') }}index.html" class="{% if nav_active=='index' %}active{% endif %}">Mới nhất</a>
+    <a href="{{ nav_prefix|default('') }}important.html" class="{% if nav_active=='important' %}active{% endif %}">★4+</a>
+    <a href="{{ nav_prefix|default('') }}portfolio.html" class="{% if nav_active=='portfolio' %}active{% endif %}">Universe</a>
+    <a href="{{ nav_prefix|default('') }}blog/index.html" class="{% if nav_active=='blog' %}active{% endif %}">📝 Blog</a>
   </nav>
 </header>
 <main>
