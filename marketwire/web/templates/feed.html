@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 style="margin-top:0">{{ title }}</h2>
+<p style="color:var(--muted);font-size:13px">{{ articles|length }} bài</p>
+
+{% for a in articles %}
+<article class="article {% if a.hits_holdings %}hit{% endif %}">
+  <h2><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a></h2>
+  <div class="meta">
+    {{ a.source_name }}
+    {% if a.expert_name %} • <strong>{{ a.expert_name }}</strong>{% endif %}
+    • {{ a.published_dt.strftime('%Y-%m-%d %H:%M') }}
+    {% if a.importance %} • <span class="imp">★ {{ a.importance }}</span>{% endif %}
+    {% if a.hits_holdings %} • <span class="hit-badge">🎯 {{ a.hits_holdings|join(', ') }}</span>{% endif %}
+  </div>
+
+  {% if a.summary_vi %}<div class="summary">{{ a.summary_vi }}</div>{% endif %}
+  {% if a.thesis %}<div class="thesis">{{ a.thesis }}</div>{% endif %}
+  {% if a.summary_en and a.lang == 'en' %}<details><summary style="cursor:pointer;font-size:12px;color:var(--muted)">EN</summary><div class="summary en">{{ a.summary_en }}</div></details>{% endif %}
+
+  <div class="tags">
+    {% for t in a.tickers %}<span class="tag ticker">{{ t }}</span>{% endfor %}
+    {% for t in a.topics %}<span class="tag">{{ t }}</span>{% endfor %}
+  </div>
+</article>
+{% endfor %}
+{% endblock %}

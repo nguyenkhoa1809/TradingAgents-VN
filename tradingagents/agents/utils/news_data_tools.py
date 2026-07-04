@@ -3,7 +3,22 @@ from typing import Annotated, Optional
 from pathlib import Path
 from tradingagents.dataflows.interface import route_to_vendor
 
-_MW_DB = Path(__file__).parent.parent.parent.parent.parent / "marketwire" / "data" / "marketwire.db"
+# Task 4B: config-driven path (env TRADINGAGENTS_MARKETWIRE_DB), read lazily
+# so it reflects whatever config a running TradingAgentsGraph set. marketwire/
+# lives as a sibling of tradingagents/ inside this repo — 4 parents up from
+# this file (was 5 before marketwire/ was merged into the TradingAgents repo).
+_DEFAULT_MW_DB = Path(__file__).parent.parent.parent.parent / "marketwire" / "data" / "marketwire.db"
+
+
+def _resolve_mw_db() -> Path:
+    try:
+        from tradingagents.dataflows.config import get_config
+        configured = get_config().get("marketwire_db_path")
+        if configured:
+            return Path(configured).expanduser()
+    except Exception:
+        pass
+    return _DEFAULT_MW_DB
 
 @tool
 def get_news(
@@ -76,8 +91,9 @@ def get_marketwire_news(
     from datetime import timedelta
     from tradingagents.dataflows.run_context import effective_end_datetime
 
-    if not _MW_DB.exists():
-        return f"MarketWire DB not found at {_MW_DB}. Run MarketWire pipeline first."
+    mw_db = _resolve_mw_db()
+    if not mw_db.exists():
+        return f"MarketWire DB not found at {mw_db}. Run MarketWire pipeline first."
 
     # Task 4B: chặn CẢ HAI đầu theo ngày phân tích. Backtest (ContextVar set) →
     # upper = cuối ngày trade_date, không lấy tin sau đó. Production (None) →
@@ -89,7 +105,7 @@ def get_marketwire_news(
     ticker_upper = ticker.strip().upper()
 
     try:
-        con = sqlite3.connect(str(_MW_DB), timeout=10)
+        con = sqlite3.connect(str(mw_db), timeout=10)
         con.row_factory = sqlite3.Row
         rows = con.execute(
             """

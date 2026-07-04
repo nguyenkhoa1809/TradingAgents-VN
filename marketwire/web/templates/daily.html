@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 style="margin-top:0">Digest {{ the_date.strftime('%A, %d %b %Y') }}</h2>
+<p style="color:var(--muted);font-size:13px">{{ articles|length }} bài, sắp theo importance</p>
+
+{% for a in articles %}
+<article class="article">
+  <h2><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a></h2>
+  <div class="meta">
+    {{ a.source_name }}
+    {% if a.expert_name %} • <strong>{{ a.expert_name }}</strong>{% endif %}
+    {% if a.importance %} • <span class="imp">★ {{ a.importance }}</span>{% endif %}
+  </div>
+  {% if a.thesis %}<div class="thesis">{{ a.thesis }}</div>{% endif %}
+  {% if a.summary_vi %}<div class="summary">{{ a.summary_vi }}</div>{% endif %}
+  <div class="tags">
+    {% for t in a.tickers %}<span class="tag ticker">{{ t }}</span>{% endfor %}
+    {% for t in a.topics %}<span class="tag">{{ t }}</span>{% endfor %}
+  </div>
+</article>
+{% endfor %}
+{% endblock %}

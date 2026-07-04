@@ -1,6 +1,8 @@
 import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+# marketwire/ lives as a sibling of tradingagents/ inside this repo (Task 4B).
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no
@@ -23,6 +25,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_ANALYST_SEED":         "analyst_seed",
     "TRADINGAGENTS_MEMORY_LOG_DIR":       "memory_log_dir",
     "TRADINGAGENTS_MEMORY_LOG_HOSTNAME":  "memory_log_hostname",
+    "TRADINGAGENTS_MARKETWIRE_DB":        "marketwire_db_path",
 }
 
 
@@ -52,6 +55,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
     "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
     "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md")),
+    # MarketWire SQLite DB (Task 4B) — offline news/broker-note feed, lives at
+    # marketwire/data/marketwire.db as a sibling of tradingagents/ in this repo.
+    "marketwire_db_path": os.getenv("TRADINGAGENTS_MARKETWIRE_DB", os.path.join(_REPO_ROOT, "marketwire", "data", "marketwire.db")),
     # Multi-machine mode: when set (e.g. a shared OneDrive folder), each
     # machine writes ONLY to its own trading_memory_<hostname>.md inside this
     # directory (single-writer-per-file — safe under cloud file sync), while

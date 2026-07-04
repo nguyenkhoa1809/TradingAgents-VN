@@ -234,3 +234,18 @@ demo_report/
 reports/
 tradingagents_fixes_v2.md
 tradingagents_fixes_v3.md
+
+# MarketWire (moved in-tree; only code is tracked, never runtime data)
+marketwire/data/*.db
+marketwire/data/*.db-*
+marketwire/data/*.db-shm
+marketwire/data/*.db-wal
+marketwire/data/*.log
+reports/
+*.html
+# ...except real source files the broad rules above would otherwise swallow:
+# `scripts/` (line above, meant for stray pip-install-e artifacts at repo
+# root) would also hide marketwire/scripts/*.py, and `*.html` would hide
+# marketwire/web/templates/*.html (Jinja2 sources, not generated output).
+!marketwire/scripts/
+!marketwire/web/templates/*.html

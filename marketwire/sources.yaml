@@ -1,0 +1,286 @@
+# MarketWire sources. Thêm/bớt feed ở đây, chạy seed_sources.py để sync vào DB.
+# Lưu ý: một số trang chặn RSS, cần dùng substack export hoặc scrape riêng.
+
+# LLM config — swap provider tại đây.
+llm:
+  default:
+    provider: deepseek          # bulk summarize: rẻ ~$1.6/tháng
+    model: deepseek-v4-flash
+  rerank:                       # re-rank top bài quan trọng
+    provider: deepseek          # flash: ổn định hơn pro cho single-turn JSON task
+    model: deepseek-v4-flash
+    enabled: true               # hybrid: Flash bulk + Flash rerank (pro không ổn định với max_tokens nhỏ)
+
+sources:
+  # ---- Macro / Markets (EN) ----
+  - name: Matt Levine - Money Stuff
+    kind: rss
+    url: https://www.bloomberg.com/opinion/authors/ARbTQlRLRjE/matthew-s-levine.rss
+    lang: en
+    region: global
+    expert_name: Matt Levine
+
+  - name: Marc Rubinstein - Net Interest
+    kind: substack
+    url: https://www.netinterest.co/feed
+    lang: en
+    region: global
+    expert_name: Marc Rubinstein
+
+  - name: Alfonso Peccatiello - Macro Compass
+    kind: substack
+    url: https://themacrocompass.substack.com/feed
+    lang: en
+    region: global
+    expert_name: Alfonso Peccatiello
+
+  - name: Apollo Academy - Torsten Slok
+    kind: rss
+    url: https://www.apolloacademy.com/feed/
+    lang: en
+    region: us
+    expert_name: Torsten Slok
+
+  - name: Calculated Risk
+    kind: rss
+    url: https://www.calculatedriskblog.com/feeds/posts/default
+    lang: en
+    region: us
+    expert_name: Bill McBride
+
+  - name: Investing.com - Economy
+    kind: rss
+    url: https://www.investing.com/rss/news_14.rss
+    lang: en
+    region: global
+
+  - name: Michael Pettis
+    kind: rss
+    url: https://carnegieendowment.org/experts/495/rss
+    lang: en
+    region: em
+    expert_name: Michael Pettis
+    active: false  # Carnegie redesign → RSS trả HTML, 0 entries; cần tìm URL mới
+
+  - name: Brad Setser - Follow the Money
+    kind: rss
+    url: https://www.cfr.org/blog/setser/rss.xml
+    lang: en
+    region: em
+    expert_name: Brad Setser
+    active: false  # CFR RSS 404, không có Substack; cần tìm URL mới
+
+  # ---- Vietnam ----
+  - name: VnEconomy - Tài chính
+    kind: rss
+    url: https://vneconomy.vn/tai-chinh.rss
+    lang: vi
+    region: vn
+
+  - name: CafeF - Tài chính ngân hàng
+    kind: rss
+    url: https://cafef.vn/tai-chinh-ngan-hang.rss
+    lang: vi
+    region: vn
+
+  - name: CafeF - Chứng khoán
+    kind: rss
+    url: https://cafef.vn/thi-truong-chung-khoan.rss
+    lang: vi
+    region: vn
+
+  - name: Vietstock - Chứng khoán
+    kind: rss
+    url: https://vietstock.vn/830/chung-khoan/co-phieu.rss
+    lang: vi
+    region: vn
+
+  - name: NDH - Tài chính
+    kind: rss
+    url: https://ndh.vn/rss/tai-chinh.rss
+    lang: vi
+    region: vn
+    active: false  # domain ndh.vn DNS chết hoàn toàn
+
+  - name: CafeF - Vĩ mô đầu tư
+    kind: rss
+    url: https://cafef.vn/vi-mo-dau-tu.rss
+    lang: vi
+    region: vn
+
+  - name: VnExpress - Kinh doanh
+    kind: rss
+    url: https://vnexpress.net/rss/kinh-doanh.rss
+    lang: vi
+    region: vn
+
+  # ---- YouTube ----
+  # channel_id: view-source trang kênh → tìm "channelId" hoặc dùng https://www.youtube.com/@handle → About → Share → copy link → lấy ID
+  - name: Macro Compass - Alfonso Peccatiello
+    kind: youtube
+    url: https://www.youtube.com/feeds/videos.xml?channel_id=UCT-SxM_GHDd3EqbkCMgfJXQ
+    lang: en
+    region: global
+    expert_name: Alfonso Peccatiello
+    active: false  # channel_id 404; cần tìm channel_id đúng
+
+  - name: Steve Le Chứng Khoán Mỹ
+    kind: youtube
+    url: https://www.youtube.com/feeds/videos.xml?channel_id=UCWp9L7IRY4kGog1K5nrEVOQ
+    lang: vi
+    region: global  # nội dung thị trường Mỹ (Fed, jobs report, cổ phiếu Mỹ), nói tiếng Việt
+    expert_name: Steve Le
+
+  # Thêm kênh khác ở đây theo format:
+  # - name: Tên kênh
+  #   kind: youtube
+  #   url: https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxxxxxx
+  #   lang: en
+  #   region: global
+  #   expert_name: Tên tác giả
+
+  # ---- Official ----
+  - name: SBV thông cáo
+    kind: scrape  # SBV không có RSS, phải scrape
+    url: https://www.sbv.gov.vn/webcenter/portal/vi/menu/trangchu/ttsk/ttsk_chitiet
+    lang: vi
+    region: vn
+
+  - name: Federal Reserve press releases
+    kind: rss
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    lang: en
+    region: us
+
+# Universe 130 mã — sync từ wavy-system/Daily/NLNK_Config_Wavy.json
+vn_universe:
+  - VIC
+  - CTG
+  - VHM
+  - VCB
+  - HPG
+  - STB
+  - MBB
+  - TCB
+  - VPB
+  - MWG
+  - MSN
+  - SSI
+  - ACB
+  - KDH
+  - FPT
+  - GMD
+  - HVN
+  - BID
+  - CTD
+  - VND
+  - CEO
+  - DXG
+  - MCH
+  - DCM
+  - HDB
+  - PDR
+  - SHB
+  - BMP
+  - GVR
+  - HDG
+  - NLG
+  - VCI
+  - IDC
+  - BVH
+  - NTP
+  - VJC
+  - VPL
+  - HT1
+  - EIB
+  - TCH
+  - PNJ
+  - VCG
+  - TPB
+  - VIP
+  - PVS
+  - FRT
+  - VTO
+  - HCM
+  - GAS
+  - ACV
+  - ANV
+  - AST
+  - BCM
+  - BSI
+  - BSR
+  - BWE
+  - CII
+  - CMG
+  - CTR
+  - DBC
+  - DDV
+  - DGC
+  - DGW
+  - DHC
+  - DHG
+  - DPG
+  - DPM
+  - DPR
+  - DRC
+  - DVP
+  - DXS
+  - FTS
+  - GDA
+  - GEX
+  - HAH
+  - HBC
+  - HDC
+  - HHV
+  - HSG
+  - KBC
+  - KDC
+  - LHG
+  - LPB
+  - MBS
+  - MSB
+  - MSH
+  - NAF
+  - NKG
+  - NT2
+  - NTC
+  - NVL
+  - OCB
+  - OIL
+  - PAN
+  - PC1
+  - PET
+  - PHR
+  - PLX
+  - POW
+  - PTB
+  - PVD
+  - PVP
+  - PVT
+  - QNS
+  - REE
+  - SAB
+  - SAS
+  - SBT
+  - SCS
+  - SHS
+  - SIP
+  - STK
+  - SZC
+  - TCM
+  - TLG
+  - TMS
+  - TNG
+  - TNH
+  - TV2
+  - VEA
+  - VHC
+  - VIB
+  - VIX
+  - VLB
+  - VNM
+  - VRE
+  - VSC
+  - VSH
+  - VTP
+  - TCX

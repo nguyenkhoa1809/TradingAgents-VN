@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 style="margin-top:0">🌅 Morning Briefing — {{ scan_date }}</h2>
+
+<!-- ═══════════════════════════════════════════════
+     SECTION 1: WAVY SIGNALS
+════════════════════════════════════════════════ -->
+<section style="margin-bottom:32px">
+  <h3 style="color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:8px">
+    📡 Tín hiệu Wavy Tunnel ({{ signals|length }} mã)
+  </h3>
+  {% if signals %}
+  <div style="overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead>
+      <tr style="background:var(--card);text-align:left">
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Mã</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Tín hiệu</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Setup</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Score</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Giá</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">SL</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">TP</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">RSI</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Vol×</th>
+        <th style="padding:8px 12px;border-bottom:2px solid var(--border)">Lý do</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in signals %}
+    <tr style="border-bottom:1px solid var(--border){% if loop.index0 % 2 == 0 %};background:var(--card){% endif %}">
+      <td style="padding:8px 12px;font-weight:700;font-size:14px">{{ s.ticker }}</td>
+      <td style="padding:8px 12px">{{ s.signal }}</td>
+      <td style="padding:8px 12px;color:var(--muted)">{{ s.setup }}</td>
+      <td style="padding:8px 12px;text-align:center">
+        <span style="background:var(--accent);color:#fff;padding:2px 7px;border-radius:10px;font-weight:600">{{ s.score }}</span>
+      </td>
+      <td style="padding:8px 12px">{{ s.price }}</td>
+      <td style="padding:8px 12px;color:#e55">{{ s.stop_loss }}</td>
+      <td style="padding:8px 12px;color:var(--accent)">{{ s.take_profit }}</td>
+      <td style="padding:8px 12px">{{ s.rsi }}</td>
+      <td style="padding:8px 12px">{{ s.volume_ratio }}×</td>
+      <td style="padding:8px 12px;font-size:12px;color:var(--muted)">{{ s.reason }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p style="color:var(--muted)">Không có tín hiệu hôm nay — file wavy_signals_{{ scan_date }}.json chưa được tạo.</p>
+  {% endif %}
+</section>
+
+<!-- ═══════════════════════════════════════════════
+     SECTION 2: SELL-SIDE NOTES
+════════════════════════════════════════════════ -->
+<section style="margin-bottom:32px">
+  <h3 style="color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:8px">
+    📋 Sell-side Notes hôm nay ({{ sellside|length }} note)
+  </h3>
+  {% if sellside %}
+  {% for a in sellside %}
+  <article class="article">
+    <h2 style="margin:0 0 4px;font-size:15px">
+      {% if a.tickers %}<span class="tag ticker">{{ a.tickers|join(' ') }}</span> {% endif %}
+      {{ a.title }}
+    </h2>
+    <div class="meta">{{ a.source_name }} • {{ a.author }} • {{ a.published_dt.strftime('%Y-%m-%d') }}</div>
+    {% if a.summary_vi %}<div class="summary">{{ a.summary_vi }}</div>{% endif %}
+    {% if a.thesis %}<div class="thesis">{{ a.thesis }}</div>{% endif %}
+  </article>
+  {% endfor %}
+  {% else %}
+  <p style="color:var(--muted)">Chưa có sell-side notes hôm nay.</p>
+  {% endif %}
+</section>
+
+<!-- ═══════════════════════════════════════════════
+     SECTION 3: MARKETWIRE ★4+
+════════════════════════════════════════════════ -->
+<section>
+  <h3 style="color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:8px">
+    ⭐ Tin quan trọng 24h (★4+) — {{ news|length }} bài
+  </h3>
+  {% if news %}
+  {% for a in news %}
+  <article class="article">
+    <h2><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a></h2>
+    <div class="meta">
+      {{ a.source_name }}
+      {% if a.expert_name %} • <strong>{{ a.expert_name }}</strong>{% endif %}
+      • {{ a.published_dt.strftime('%Y-%m-%d %H:%M') }}
+      • <span class="imp">★ {{ a.importance }}</span>
+    </div>
+    {% if a.summary_vi %}<div class="summary">{{ a.summary_vi }}</div>{% endif %}
+    {% if a.thesis %}<div class="thesis">{{ a.thesis }}</div>{% endif %}
+    <div class="tags">
+      {% for t in a.tickers %}<span class="tag ticker">{{ t }}</span>{% endfor %}
+      {% for t in a.topics %}<span class="tag">{{ t }}</span>{% endfor %}
+    </div>
+  </article>
+  {% endfor %}
+  {% else %}
+  <p style="color:var(--muted)">Chưa có tin ★4+ trong 24 giờ qua.</p>
+  {% endif %}
+</section>
+{% endblock %}
