@@ -785,10 +785,17 @@ def get_news(
         from vnstock_news import Crawler  # type: ignore
         articles = _crawl_vn_news(limit_per_feed=20)
 
-        # Best-effort date filter: keep articles with published date ≤ end_date
-        end_dt_obj = datetime.strptime(end_date, "%Y-%m-%d")
+        # Task 4B: RSS crawler chỉ trả tin HIỆN TẠI. Khi backtest (ContextVar set),
+        # clamp upper bound về trade_date để không lấy tin sau ngày phân tích.
+        from tradingagents.dataflows.run_context import get_trade_date
+        _bt_date = get_trade_date()
+        _is_backtest = _bt_date is not None
+        end_cap = min(end_date, _bt_date) if _is_backtest else end_date
+
+        # Best-effort date filter: keep articles with published date ≤ end_cap
+        end_dt_obj = datetime.strptime(end_cap, "%Y-%m-%d")
         def _article_date(a) -> Optional[datetime]:
-            raw = a.get("published") or a.get("date") or ""
+            raw = a.get("publish_time") or a.get("published") or a.get("date") or ""
             try:
                 return datetime.fromisoformat(str(raw)[:19])
             except Exception:
@@ -796,20 +803,29 @@ def get_news(
 
         dated   = [a for a in articles if _article_date(a) is not None and _article_date(a) <= end_dt_obj]
         undated = [a for a in articles if _article_date(a) is None]
-        articles = dated + undated  # dated+filtered first, undated appended as fallback
 
-        relevant = [a for a in articles if sym in str(a.get("title", "")).upper()]
+        relevant = [a for a in dated if sym in str(a.get("title", "")).upper()]
         if not relevant:
-            relevant = articles[:10]
+            if _is_backtest:
+                # Backtest: KHÔNG bơm tin hiện tại làm fallback (rò rỉ tương lai).
+                # RSS live không có kho lịch sử ⇒ báo thiếu, để agent dựa vào FA/TA.
+                return (
+                    f"# News for {sym} (target window: {start_date} to {end_cap})\n"
+                    f"# vnstock_news RSS chỉ có tin hiện tại — KHÔNG có tin lịch sử ≤ {end_cap}.\n"
+                    f"# Backtest mode: bỏ qua fallback tin hiện tại để tránh data leakage.\n"
+                    f"# Dựa vào phân tích cơ bản và kỹ thuật.\n"
+                )
+            # Production real-time: giữ hành vi cũ — top tin gần nhất làm context.
+            relevant = (dated + undated)[:10]
         if relevant:
             lines = [
-                f"[{a.get('published', 'date unknown')}] {a.get('title', 'No title')}"
+                f"[{a.get('publish_time') or a.get('published', 'date unknown')}] {a.get('title', 'No title')}"
                 for a in relevant[:15]
             ]
             note = ("⚠ News source provides current articles only; "
                     f"historical filtering applied where publication date available.\n")
             header = (
-                f"# News for {sym} (target window: {start_date} to {end_date})\n"
+                f"# News for {sym} (target window: {start_date} to {end_cap})\n"
                 f"# Source: vnstock_news Crawler ({len(relevant)} articles)\n"
                 f"# {note}\n"
             )

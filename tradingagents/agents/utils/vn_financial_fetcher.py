@@ -367,10 +367,15 @@ def fetch_vn_financial_context(
             "chart_json":  json.dumps(chart_data),
             "is_bank":     is_bank,
             "error":       None,
+            # Raw sliced frames cho valuation_engine (tránh fetch lại ratio/income/cf).
+            "frames": {
+                "ra": ra, "rq": rq, "ia": ia, "iq": iq, "ba": ba, "ca": ca,
+                "latest_price": latest_price, "is_bank": is_bank,
+            },
         }
 
     except Exception as e:
-        return {"summary_md": "", "chart_json": "", "is_bank": False, "error": str(e)}
+        return {"summary_md": "", "chart_json": "", "is_bank": False, "error": str(e), "frames": {}}
 
 
 # ── Single source of truth (A1/A2/A3) ──────────────────────────────────────
@@ -385,10 +390,16 @@ FCF) đã được tính sẵn bằng máy — chỉ diễn giải, không tính
 """
 
 
-def build_financials_payload(symbol: str, source: str = "VCI", trade_date: str | None = None) -> dict:
+def build_financials_payload(symbol: str, source: str = "VCI", trade_date: str | None = None,
+                             beta: float | None = None) -> dict:
     """Canonical financial payload — MỘT nguồn số duy nhất cho mọi agent (A1).
 
     Tất cả số/tỷ số được tính sẵn ở Python layer (A2); FCF = CFO − CapEx (A3).
+
+    ``beta`` (Task 10 R1, tính 1 lần từ price history ở trading_graph.py) được
+    truyền xuống valuation_engine (V1) để COE dùng beta thật thay vì
+    default_beta=1.0 — None vẫn hoạt động (fallback), giữ hàm gọi được độc lập.
+
     Trả về:
         block       : markdown "nguồn chân lý" tiêm vào mọi agent (kèm chỉ thị cite-only)
         chart_json  : JSON cho render_report.py
@@ -406,10 +417,26 @@ def build_financials_payload(symbol: str, source: str = "VCI", trade_date: str |
         data = json.loads(ctx["chart_json"]) if ctx.get("chart_json") else {}
     except (json.JSONDecodeError, ValueError):
         data = {}
+
+    # ── Task 8: định giá deterministic — tiêm thẳng vào block (single source) ──
+    # valuation_engine tính từ số, agent chỉ diễn giải. Best-effort: lỗi ở đây
+    # không được phá payload (agent vẫn có bảng tài chính gốc để cite).
+    valuation = {}
+    try:
+        from tradingagents.agents.utils.valuation_engine import build_valuation_block
+        val = build_valuation_block(symbol, ctx.get("frames", {}),
+                                    source=source, trade_date=trade_date, beta=beta)
+        if not val.get("error") and val.get("valuation_md"):
+            block += "\n" + val["valuation_md"]
+            valuation = val.get("data", {})
+    except Exception:
+        pass
+
     return {
         "block": block,
         "chart_json": ctx["chart_json"],
         "data": data,
+        "valuation": valuation,
         "is_bank": ctx.get("is_bank", False),
         "error": None,
     }

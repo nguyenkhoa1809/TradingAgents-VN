@@ -24,6 +24,7 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.dataflows.config import get_config
 
 
 def create_portfolio_manager(llm):
@@ -44,6 +45,8 @@ def create_portfolio_manager(llm):
             )
             trader_plan = "[MISSING — Trader phase produced no output]"
 
+        ev_band_text = get_config().get("ev_rating_band_text", "")
+
         past_context = state.get("past_context", "")
         lessons_line = (
             f"- Lessons from prior decisions and outcomes:\n{past_context}\n"
@@ -63,6 +66,13 @@ def create_portfolio_manager(llm):
 - **Hold**: Maintain current position, no action needed
 - **Underweight**: Reduce exposure, take partial profits
 - **Sell**: Exit position or avoid entry
+
+**BẢNG BAND EV → RATING (CỐ ĐỊNH — ánh xạ bắt buộc, điền vào ev_rating_band):**
+```
+{ev_band_text}
+```
+EV thô rơi vào band nào → rating đề xuất theo band đó. Mọi rating LỆCH khỏi band
+phải giải trình rõ (rủi ro đuôi / thanh khoản / mandate) — nếu không, rating sai.
 
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
@@ -104,7 +114,16 @@ def create_portfolio_manager(llm):
    Base sang Bull, Bear giữ nguyên). Gắn nhãn Conviction: THẤP nếu dải [EV_low, EV_high]
    chứa EV=0% hoặc nếu EV_low/EV_high sẽ đổi rating; CAO nếu EV_low cách ranh giới gần
    nhất ≥3 điểm %; TRUNG BÌNH nếu còn lại.
-10. ⛔ CẤM SELF-CITATION: Không được đề cập tên analyst, CTCK hay nguồn bên ngoài
+10. BAND EV → RATING (điền ev_rating_band): Ánh xạ EV thô vào BẢNG BAND CỐ ĐỊNH ở trên,
+    nêu band tương ứng và rating đề xuất. Nếu rating cuối lệch band → giải trình rõ.
+11. PAYOFF + HORIZON + HỘI TỤ (điền payoff_horizon): Mỗi kịch bản payoff BẮT BUỘC ghi
+    khung thời gian (vd "+18% trong 12 tháng"). Nếu upside phụ thuộc re-rating mà không
+    có xúc tác gần (nối mục why-now) → hạ payoff kỳ vọng và ghi rõ giả định hội tụ
+    [hoàn toàn/một phần] trong [horizon]. Chống value trap.
+12. EV ĐIỀU CHỈNH RỦI RO (điền ev_risk_adjusted): Hiển thị CẢ EV thô lẫn
+    EV_risk_adjusted = EV / (độ rộng dải payoff = payoff_Bull − payoff_Bear). Vị thế EV
+    cao nhưng dải payoff rất rộng phải đánh dấu rủi ro cao, không ngang vị thế EV thấp dải hẹp.
+13. ⛔ CẤM SELF-CITATION: Không được đề cập tên analyst, CTCK hay nguồn bên ngoài
     (ví dụ: "Analyst X từ Vietcap") TRỪ KHI thông tin đó có nguyên văn trong context
     đã cung cấp. Không được tạo citation để minh họa hay xác nhận EV/định giá.
 
@@ -128,6 +147,13 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             )
         except Exception:
             pass
+
+        # Task 10 R1: đính kèm NGUYÊN VĂN block risk metrics deterministic vào
+        # report cuối — không qua diễn giải LLM, để verify được độc lập với hành
+        # vi model (số liệu debator trích dẫn trong văn xuôi có thể lệch/làm tròn).
+        risk_metrics_block = state.get("risk_metrics_block", "")
+        if risk_metrics_block:
+            final_trade_decision += f"\n\n{risk_metrics_block}"
 
         pm_rating = pm_obj.rating.value if pm_obj is not None else None
         pm_reason = pm_obj.executive_summary if pm_obj is not None else None

@@ -170,7 +170,7 @@ def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> tuple[
 # ── Config ────────────────────────────────────────────────────────────────────
 # Single ticker:  TICKERS = ["VCB"]
 # Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
-TICKERS    = ["VCB"]
+TICKERS    = ["TCB"]
 TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
 
 # OUTPUT LANGUAGE — ngôn ngữ của TẤT CẢ báo cáo (tranh luận nội bộ vẫn English)

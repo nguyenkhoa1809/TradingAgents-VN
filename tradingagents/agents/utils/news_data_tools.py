@@ -73,12 +73,19 @@ def get_marketwire_news(
     tickers — it is faster, offline, and includes internal broker analysis.
     """
     import sqlite3, json
-    from datetime import datetime, timezone, timedelta
+    from datetime import timedelta
+    from tradingagents.dataflows.run_context import effective_end_datetime
 
     if not _MW_DB.exists():
         return f"MarketWire DB not found at {_MW_DB}. Run MarketWire pipeline first."
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # Task 4B: chặn CẢ HAI đầu theo ngày phân tích. Backtest (ContextVar set) →
+    # upper = cuối ngày trade_date, không lấy tin sau đó. Production (None) →
+    # upper = now() như cũ. published lưu ISO ⇒ so sánh chuỗi ISO là đúng thứ tự.
+    end_dt = effective_end_datetime()
+    start_dt = end_dt - timedelta(days=days)
+    lower = start_dt.isoformat()
+    upper = end_dt.isoformat()
     ticker_upper = ticker.strip().upper()
 
     try:
@@ -92,6 +99,7 @@ def get_marketwire_news(
             FROM articles a JOIN sources s ON a.source_id = s.id
             WHERE a.processed = 1
               AND a.published >= ?
+              AND a.published <= ?
               AND (
                     a.tickers LIKE ?
                  OR s.name = 'Sell-side Notes'
@@ -99,14 +107,14 @@ def get_marketwire_news(
             ORDER BY COALESCE(a.importance, 0) DESC, a.published DESC
             LIMIT 15
             """,
-            (cutoff, f'%"{ticker_upper}"%'),
+            (lower, upper, f'%"{ticker_upper}"%'),
         ).fetchall()
         con.close()
     except Exception as e:
         return f"MarketWire query error: {e}"
 
     if not rows:
-        return f"No MarketWire articles found for {ticker_upper} in the last {days} days."
+        return f"No MarketWire articles found for {ticker_upper} in [{lower[:10]}, {upper[:10]}]."
 
     lines = [f"=== MarketWire: {ticker_upper} (last {days} days, {len(rows)} articles) ===\n"]
     for r in rows:

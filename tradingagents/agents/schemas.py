@@ -227,6 +227,39 @@ class PortfolioDecision(BaseModel):
             "EV sensitivity: [+2.7%, +6.0%]."
         ),
     )
+    ev_rating_band: str = Field(
+        default="",
+        description=(
+            "EV1 — Ánh xạ EV → rating theo BAND CỐ ĐỊNH đã cho trong prompt. BẮT BUỘC: "
+            "(1) nêu EV thô rơi vào band nào của bảng; (2) rating đề xuất theo band là gì; "
+            "(3) nếu rating cuối LỆCH khỏi band → giải trình rõ lý do (rủi ro đuôi, thanh "
+            "khoản, mandate benchmark-relative) — nếu không giải trình, rating bị coi là sai. "
+            "Format: 'EV +8% → band Overweight; rating cuối = Overweight (khớp band)' hoặc "
+            "'EV +8% → band Overweight; nhưng hạ xuống Hold vì [lý do]'."
+        ),
+    )
+    payoff_horizon: str = Field(
+        default="",
+        description=(
+            "EV2 — Payoff gắn horizon + xác suất hội tụ (chống value trap). BẮT BUỘC: "
+            "(1) mỗi kịch bản payoff ghi kèm KHUNG THỜI GIAN (vd '+18% trong 12 tháng'); "
+            "(2) nếu upside phụ thuộc re-rating mà KHÔNG có xúc tác gần (nối mục why-now) → "
+            "hạ payoff kỳ vọng, ghi rõ 'giá có thể đúng fair value nhưng thị trường chưa "
+            "công nhận trong X tháng'; (3) ghi rõ giả định hội tụ: 'EV này giả định hội tụ "
+            "[hoàn toàn/một phần] trong [horizon]'."
+        ),
+    )
+    ev_risk_adjusted: str = Field(
+        default="",
+        description=(
+            "EV3 — EV điều chỉnh rủi ro. BẮT BUỘC hiển thị CẢ HAI: EV thô và "
+            "EV_risk_adjusted = EV / (độ rộng dải payoff) — dạng Sharpe thô để so chéo mã. "
+            "Độ rộng dải payoff = payoff_Bull − payoff_Bear (điểm %). "
+            "Format: 'EV thô: +5% | EV điều chỉnh rủi ro: 0.19 | dải payoff: [−8%, +18%] "
+            "(rộng 26pp)'. Vị thế EV cao nhưng dải payoff rất rộng phải được đánh dấu là "
+            "rủi ro cao, không đối xử ngang vị thế EV thấp dải hẹp."
+        ),
+    )
     conviction: str = Field(
         description=(
             "Nhãn độ tin cậy DỰA TRÊN dải EV vừa tính — KHÔNG phải cảm tính. "
@@ -280,6 +313,14 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         "",
         f"**Phân Tích Expected Value & Định Giá**: {decision.expected_value}",
         f"**EV Sensitivity**: {decision.ev_sensitivity}",
+    ]
+    if decision.ev_rating_band:
+        parts.append(f"**EV → Rating (band)**: {decision.ev_rating_band}")
+    if decision.ev_risk_adjusted:
+        parts.append(f"**EV điều chỉnh rủi ro**: {decision.ev_risk_adjusted}")
+    if decision.payoff_horizon:
+        parts.append(f"**Payoff & Horizon**: {decision.payoff_horizon}")
+    parts += [
         "",
         f"**Executive Summary**: {decision.executive_summary}",
         "",

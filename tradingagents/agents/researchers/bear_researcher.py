@@ -37,6 +37,7 @@ Key points to focus on:
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
 - Sensitivity Anchoring: If the fundamentals report includes a sensitivity table (Phân Tích Độ Nhạy), you MUST use its specific numbers to support your bear case. State the downside scenario level of the swing variable and the corresponding fair value / downside it implies. Challenge the bull by pointing to the breakeven: "At {{swing_variable}} = X, fair value drops to Y — below the current price." Avoid vague claims about risk without quantifying the impact.
 - Data Substantiation: Every trend claim you make must be backed by at least 2–3 actual data points. When citing deterioration, show the series (e.g., margin Q1→Q2→Q3). Distinguish "cyclical trough" (temporary) from "structural decline" (multi-year). If you use a single bad quarter as evidence of a trend, the bull will legitimately challenge it — pre-empt this by showing the full series and explaining why this isn't just noise.
+- FALSIFICATION (BẮT BUỘC — kết thúc bằng mục này): Nêu RÕ ít nhất 1 điều kiện ĐO ĐƯỢC sẽ chứng minh luận điểm Bear của bạn SAI (falsifiable). Phải là ngưỡng cụ thể quan sát được trong 1–2 quý tới, KHÔNG phải quan điểm. Ví dụ: "Tôi sai nếu doanh thu Q3 tăng > X% YoY hoặc nợ xấu giảm < Y%". Đây là trigger để PM đưa vào điều kiện nâng rating.
 
 Resources available:
 

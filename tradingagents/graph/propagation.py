@@ -25,6 +25,7 @@ class Propagator:
         financials_block: str = "",
         financials_chart_json: str = "",
         company_profile_block: str = "",
+        risk_metrics_block: str = "",
     ) -> Dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -44,6 +45,7 @@ class Propagator:
             "financials_block": financials_block,
             "financials_chart_json": financials_chart_json,
             "company_profile_block": company_profile_block,
+            "risk_metrics_block": risk_metrics_block,
             "fact_check_corrections": "",
             "verified_entity_claims": "",
             "investment_debate_state": InvestDebateState(

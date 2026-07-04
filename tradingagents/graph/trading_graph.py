@@ -395,19 +395,25 @@ class TradingAgentsGraph:
             logger.warning("Could not fetch company profile for %s: %s", ticker, e)
             return ""
 
-    def _resolve_financials(self, ticker: str, asset_type: str = "stock", trade_date: str | None = None) -> Tuple[str, str]:
+    def _resolve_financials(self, ticker: str, asset_type: str = "stock", trade_date: str | None = None,
+                            beta: float | None = None) -> Tuple[str, str]:
         """Compute the canonical financials ONCE at run start (A1 single source of truth).
 
         Python-computed payload (A2/A3) injected into every number-touching
         agent. Best-effort: returns ("", "") for non-VN tickers or on failure,
         so agents degrade to ticker-only context instead of fabricating numbers.
+
+        ``beta`` (Task 10 R1, computed once from price history by
+        ``_resolve_risk_metrics``) feeds the COE calc in valuation_engine (V1)
+        so justified P/B / DDM use the ticker's real beta instead of the
+        default_beta=1.0 fallback.
         """
         from tradingagents.dataflows.market_router import is_vn_ticker
         if asset_type != "stock" or not is_vn_ticker(ticker):
             return "", ""
         try:
             from tradingagents.agents.utils.vn_financial_fetcher import build_financials_payload
-            payload = build_financials_payload(ticker, trade_date=trade_date)
+            payload = build_financials_payload(ticker, trade_date=trade_date, beta=beta)
             if payload.get("error"):
                 logger.warning("Financials payload for %s failed: %s", ticker, payload["error"])
                 return "", ""
@@ -415,6 +421,27 @@ class TradingAgentsGraph:
         except Exception as e:
             logger.warning("Could not build financials payload for %s: %s", ticker, e)
             return "", ""
+
+    def _resolve_risk_metrics(self, ticker: str, asset_type: str = "stock", trade_date: str | None = None) -> Tuple[str, "dict"]:
+        """Compute deterministic risk metrics ONCE at run start (Task 10 R1).
+
+        Beta/VaR/drawdown/ADTV/days-to-liquidate từ price history, inject vào 3
+        risk debator. Best-effort: ("", {}) cho non-VN hoặc lỗi → debator degrade sạch.
+        Trả cả ``data`` để beta có thể chảy sang valuation_engine (V1 COE).
+        """
+        from tradingagents.dataflows.market_router import is_vn_ticker
+        if asset_type != "stock" or not is_vn_ticker(ticker):
+            return "", {}
+        try:
+            from tradingagents.agents.utils.vn_risk_metrics import build_risk_metrics_block
+            res = build_risk_metrics_block(ticker, trade_date=trade_date)
+            if res.get("error"):
+                logger.warning("Risk metrics for %s failed: %s", ticker, res["error"])
+                return "", {}
+            return res.get("block", ""), res.get("data", {})
+        except Exception as e:
+            logger.warning("Could not build risk metrics for %s: %s", ticker, e)
+            return "", {}
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock", run_type: str = "unknown"):
         """Run the trading agents graph for a company on a specific date.
@@ -427,6 +454,12 @@ class TradingAgentsGraph:
         successful node on a subsequent invocation with the same ticker+date.
         """
         self.ticker = company_name
+
+        # Task 4B: khoá ngày phân tích vào ContextVar để mọi news tool (do LLM gọi,
+        # không thấy state) truy vấn tin trong [trade_date − N, trade_date], không
+        # rò rỉ tin tương lai khi backtest. Reset trong finally.
+        from tradingagents.dataflows.run_context import set_trade_date, reset_trade_date
+        _td_token = set_trade_date(str(trade_date))
 
         # Resolve any pending memory-log entries for this ticker before the pipeline runs.
         self._resolve_pending_entries(company_name)
@@ -452,6 +485,7 @@ class TradingAgentsGraph:
         try:
             return self._run_graph(company_name, trade_date, asset_type=asset_type, run_type=run_type)
         finally:
+            reset_trade_date(_td_token)
             if self._checkpointer_ctx is not None:
                 self._checkpointer_ctx.__exit__(None, None, None)
                 self._checkpointer_ctx = None
@@ -463,7 +497,13 @@ class TradingAgentsGraph:
         # deterministically resolved instrument identity for all agents.
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
-        financials_block, financials_chart_json = self._resolve_financials(company_name, asset_type, trade_date=str(trade_date))
+        # Risk metrics trước để beta thật (R1) chảy vào COE của valuation_engine (V1),
+        # thay vì default_beta=1.0 — cùng 1 lần fetch giá, không tính beta 2 lần.
+        risk_metrics_block, risk_metrics_data = self._resolve_risk_metrics(company_name, asset_type, trade_date=str(trade_date))
+        beta = risk_metrics_data.get("beta")
+        financials_block, financials_chart_json = self._resolve_financials(
+            company_name, asset_type, trade_date=str(trade_date), beta=beta
+        )
         company_profile_block = self._resolve_company_profile(company_name, asset_type)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
@@ -474,6 +514,7 @@ class TradingAgentsGraph:
             financials_block=financials_block,
             financials_chart_json=financials_chart_json,
             company_profile_block=company_profile_block,
+            risk_metrics_block=risk_metrics_block,
         )
         args = self.propagator.get_graph_args()
 

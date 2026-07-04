@@ -131,6 +131,44 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # so the reflection label keeps reading "Alpha vs SPY" for US tickers
     # while non-US tickers get their regional index automatically.
     "benchmark_ticker": None,
+    # Định giá deterministic (Task 8 / valuation_engine.py).
+    # COE = risk_free + beta × ERP. Các tham số vĩ mô cập nhật ĐỊNH KỲ tại đây,
+    # KHÔNG hardcode rải rác trong code.
+    "valuation": {
+        "risk_free":    0.030,   # lợi suất TPCP 10Y VN — cập nhật hàng quý
+        "erp":          0.085,   # ERP + country risk premium (Damodaran EM) — cập nhật/năm
+        "default_beta": 1.0,     # beta mặc định (Task 10 R1 sẽ wire beta thật từ price history)
+        "g_cap":        0.05,    # trần tăng trưởng bền vững perpetuity (gần lạm phát dài hạn)
+        "g_coe_buffer": 0.02,    # spread tối thiểu COE−g để công thức Gordon ổn định
+        "payout_max_gd": 0.80,   # payout tối đa vẫn coi bền vững cho GD-eligible
+        "streak_min_gd": 2,      # số năm tăng cổ tức tối thiểu (depth data events() ~2y)
+        "ddm_min_payout": 0.30,  # payout tối thiểu để DDM có ý nghĩa (mã cổ tức thực)
+        "sector_level":  3,      # cấp ICB dùng làm peer group cho sector median
+        "max_peers":     25,     # trần số mã peer fetch (bound API + wall-clock)
+        "peer_sleep":    0.3,    # nghỉ giữa call peer (golden tier 500/min)
+        "dcf_horizon":   10,     # số năm high-growth cho reverse-DCF
+    },
+    # Risk metrics deterministic (Task 10 / vn_risk_metrics.py).
+    # Tính beta/VaR/drawdown/ADTV/days-to-liquidate từ price history.
+    "risk_metrics": {
+        "var_confidence":    0.95,   # mức tin cậy VaR
+        "var_horizon_days":  20,     # chân trời VaR (ngày giao dịch)
+        "adtv_window":       30,     # cửa sổ tính ADTV
+        "drawdown_years":    3,      # cửa sổ max drawdown
+        "position_size_vnd": 50e9,   # quy mô vị thế KDEF giả định (tỷ VND) — cập nhật theo quỹ
+        "participation_rate": 0.20,  # % ADTV có thể tham gia/ngày khi thanh lý
+        "benchmark":         "VNINDEX",
+    },
+    # Band ánh xạ Expected Value → rating cho Portfolio Manager (Task 9 EV1).
+    # Ngưỡng CỐ ĐỊNH theo khẩu vị quỹ — sửa trực tiếp tại đây; PM phải giải trình
+    # mọi rating lệch khỏi band. Đây là band Task 4 backtest đo direction_correct.
+    "ev_rating_band_text": (
+        "EV > +12%  & Conviction ≥ TB  → Buy\n"
+        "+5% đến +12%                   → Overweight\n"
+        "−5% đến +5%                    → Hold\n"
+        "−12% đến −5%                   → Underweight\n"
+        "EV < −12%                      → Sell"
+    ),
     "benchmark_map": {
         ".NS":  "^NSEI",       # NSE India (Nifty 50)
         ".BO":  "^BSESN",      # BSE India (Sensex)

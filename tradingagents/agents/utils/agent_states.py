@@ -79,6 +79,10 @@ class AgentState(MessagesState):
     financials_block: Annotated[str, "Canonical financial data block (single source of truth)"]
     financials_chart_json: Annotated[str, "VN_CHART_DATA JSON for render_report charts"]
 
+    # Risk metrics deterministic (Task 10 R1) — beta/VaR/drawdown/ADTV/days-to-liquidate
+    # tính từ price history ở run start, inject vào 3 risk debator.
+    risk_metrics_block: Annotated[str, "Deterministic risk metrics block for risk analysts"]
+
     # Grounded fact-check gate (Round 3 C1-C5)
     company_profile_block: Annotated[str, "Company profile from vnstock (C5 ground truth for entity verification)"]
     fact_check_corrections: Annotated[str, "Corrections from C3 gate: contradicted/unverified entity claims"]

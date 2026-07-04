@@ -230,6 +230,22 @@ def financials_section(state: Mapping[str, Any]) -> str:
     return f"\n\n{block}{_FINANCIALS_CITE_RULE}"
 
 
+def risk_metrics_section(state: Mapping[str, Any]) -> str:
+    """Block risk metrics deterministic (Task 10 R1) cho risk debators.
+
+    Returns '' khi không có (non-VN, fetch fail) — prompt degrade sạch, debator
+    tự diễn giải định tính thay vì bịa số.
+    """
+    block = state.get("risk_metrics_block")
+    if not isinstance(block, str) or not block.strip():
+        return ""
+    return (
+        f"\n\n{block}\n"
+        "⚠️ Dùng CHÍNH các con số rủi ro ở trên (beta/VaR/drawdown/ADTV/"
+        "days-to-liquidate) làm cơ sở tranh luận. KHÔNG tự nghĩ ra mức rủi ro khác.\n"
+    )
+
+
 def fact_check_section(state: Mapping[str, Any]) -> str:
     """Corrections từ C3 gate — inject vào Phase II agents để ngăn lan nhiễm factual.
 
