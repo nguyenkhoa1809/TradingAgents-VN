@@ -4,12 +4,19 @@ Usage:
     python calibration_report.py
     python calibration_report.py --ticker VCB
     python calibration_report.py --resolved-only
+
+Reads and combines every calibration_store_<hostname>.db found in the
+calibration directory (one per machine — see backtest.py), so running this
+from any machine shows accuracy across all of them.
 """
 import argparse
+import os
 import sqlite3
 from pathlib import Path
 
-CALIBRATION_DB = Path.home() / ".tradingagents" / "calibration" / "calibration_store.db"
+CALIBRATION_DIR = Path(os.getenv(
+    "TRADINGAGENTS_CALIBRATION_DIR", str(Path.home() / ".tradingagents" / "calibration")
+)).expanduser()
 
 _MIN_SAMPLE = 30
 _EV_BINS = [
@@ -31,11 +38,14 @@ def _ev_bucket(ev_pct) -> str:
     return "EV ≥ 10%"
 
 
-def _load(ticker_filter: str | None, resolved_only: bool) -> list[dict]:
-    if not CALIBRATION_DB.exists():
+def _calibration_db_paths() -> list[Path]:
+    """Every per-machine calibration DB found in the calibration directory."""
+    if not CALIBRATION_DIR.exists():
         return []
-    con = sqlite3.connect(str(CALIBRATION_DB))
-    con.row_factory = sqlite3.Row
+    return sorted(CALIBRATION_DIR.glob("calibration_store_*.db"))
+
+
+def _load(ticker_filter: str | None, resolved_only: bool) -> list[dict]:
     sql = "SELECT * FROM calibration_runs WHERE 1=1"
     params = []
     if ticker_filter:
@@ -43,9 +53,17 @@ def _load(ticker_filter: str | None, resolved_only: bool) -> list[dict]:
         params.append(ticker_filter.upper())
     if resolved_only:
         sql += " AND resolved_at IS NOT NULL"
-    rows = con.execute(sql, params).fetchall()
-    con.close()
-    return [dict(r) for r in rows]
+
+    rows: list[dict] = []
+    for db_path in _calibration_db_paths():
+        con = sqlite3.connect(str(db_path))
+        con.row_factory = sqlite3.Row
+        for r in con.execute(sql, params).fetchall():
+            d = dict(r)
+            d["_source_host"] = db_path.stem.removeprefix("calibration_store_")
+            rows.append(d)
+        con.close()
+    return rows
 
 
 def _print_table(title: str, rows: list[dict], group_key: str) -> None:
@@ -83,9 +101,11 @@ def _print_table(title: str, rows: list[dict], group_key: str) -> None:
 
 
 def _summary(rows: list[dict]) -> None:
+    hosts = sorted({r["_source_host"] for r in rows})
     print("\n" + "═"*60)
     print("  CALIBRATION REPORT — TradingAgents-VN")
-    print("  DB:", CALIBRATION_DB)
+    print("  Dir:", CALIBRATION_DIR)
+    print("  Machines:", ", ".join(hosts) if hosts else "—")
     print("═"*60)
 
     _print_table("By Conviction", rows, "conviction")
@@ -105,8 +125,8 @@ def main() -> None:
     parser.add_argument("--resolved-only", action="store_true", help="Only show resolved entries")
     args = parser.parse_args()
 
-    if not CALIBRATION_DB.exists():
-        print(f"No calibration DB found at {CALIBRATION_DB}")
+    if not _calibration_db_paths():
+        print(f"No calibration DB found under {CALIBRATION_DIR}")
         print("Run `python backtest.py` first to collect data.")
         return
 

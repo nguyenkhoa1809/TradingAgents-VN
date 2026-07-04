@@ -21,6 +21,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_ANALYST_TEMPERATURE":  "analyst_temperature",
     "TRADINGAGENTS_ANALYST_SEED":         "analyst_seed",
+    "TRADINGAGENTS_MEMORY_LOG_DIR":       "memory_log_dir",
+    "TRADINGAGENTS_MEMORY_LOG_HOSTNAME":  "memory_log_hostname",
 }
 
 
@@ -50,6 +52,16 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
     "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
     "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md")),
+    # Multi-machine mode: when set (e.g. a shared OneDrive folder), each
+    # machine writes ONLY to its own trading_memory_<hostname>.md inside this
+    # directory (single-writer-per-file — safe under cloud file sync), while
+    # reads merge every machine's file so lessons/pending trades carry over
+    # when you alternate between devices. Overrides memory_log_path when set.
+    # None (default) = legacy single-file mode at memory_log_path.
+    "memory_log_dir": None,
+    # Override the auto-detected hostname used for the per-machine filename
+    # above. None = socket.gethostname().
+    "memory_log_hostname": None,
     # Optional cap on the number of resolved memory log entries. When set,
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.

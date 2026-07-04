@@ -1,8 +1,25 @@
-"""Append-only markdown decision log for TradingAgents."""
+"""Append-only markdown decision log for TradingAgents.
 
-from typing import List, Optional
-from pathlib import Path
+Multi-machine mode (memory_log_dir set): each machine owns exactly one file
+(``trading_memory_<hostname>.md``) and is the ONLY writer of brand-new
+entries into that file — this is what makes syncing the folder via OneDrive
+(or any other file-sync tool) safe: a file that only ever gets appended to
+by a single device is exactly the sync pattern cloud storage handles well.
+Reads (``get_past_context``, ``get_pending_entries``) transparently merge
+every ``trading_memory_*.md`` file found in the directory, so a machine
+sees lessons/pending trades logged by every other machine. Resolving a
+pending entry (``update_with_outcome`` / ``batch_update_with_outcomes``)
+still writes in place into whichever file that entry actually lives in —
+this is the one case where a machine may write into another machine's
+file, but it only happens for a single alternating user (never truly
+concurrent) and uses the same atomic temp+replace as before, so a partial
+sync only risks a stale re-resolve next run, never corruption.
+"""
+
 import re
+import socket
+from pathlib import Path
+from typing import List, Optional
 
 from tradingagents.agents.utils.rating import parse_rating
 
@@ -17,16 +34,35 @@ class TradingMemoryLog:
     _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
     # Detects a resolved-return field in old-format tags (e.g. "+0.0%", "-3.5%")
     _PCT_RE = re.compile(r"^[+\-]?\d+\.\d+%$")
+    _SAFE_HOST_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
     def __init__(self, config: dict = None):
         cfg = config or {}
         self._log_path = None
-        path = cfg.get("memory_log_path")
-        if path:
-            self._log_path = Path(path).expanduser()
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._multi_dir = None  # set => multi-machine mode
+
+        log_dir = cfg.get("memory_log_dir")
+        if log_dir:
+            self._multi_dir = Path(log_dir).expanduser()
+            self._multi_dir.mkdir(parents=True, exist_ok=True)
+            hostname = cfg.get("memory_log_hostname") or socket.gethostname()
+            safe_host = self._SAFE_HOST_RE.sub("_", hostname).strip("_") or "machine"
+            # Own file — the ONLY file this process ever appends brand-new entries to.
+            self._log_path = self._multi_dir / f"trading_memory_{safe_host}.md"
+        else:
+            path = cfg.get("memory_log_path")
+            if path:
+                self._log_path = Path(path).expanduser()
+                self._log_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Optional cap on resolved entries. None disables rotation.
         self._max_entries = cfg.get("memory_log_max_entries")
+
+    def _all_log_paths(self) -> List[Path]:
+        """Every file to read from — all machines' logs in multi-machine mode."""
+        if self._multi_dir:
+            return sorted(self._multi_dir.glob("trading_memory_*.md"))
+        return [self._log_path] if self._log_path else []
 
     # --- Write path (Phase A) ---
 
@@ -39,24 +75,30 @@ class TradingMemoryLog:
     ) -> None:
         """Append pending entry at end of propagate(). No LLM call.
 
-        ``run_type`` must be set explicitly by callers — "production" for real
-        investment decisions, "debug" / "test" for exploratory runs.  The
-        default "unknown" acts as a safety net: get_past_context() excludes
-        every entry that is not "production", so an unlabelled run cannot
-        silently pollute future PM decisions.
+        Always writes to THIS machine's own file (``self._log_path``) — never
+        another machine's file — so appends are always single-writer, even
+        in multi-machine mode.
+
+        ``run_type`` must be set explicitly by callers — "production" for
+        real investment decisions, "debug" / "test" for exploratory runs.
+        The default "unknown" acts as a safety net: get_past_context()
+        excludes every entry that is not "production", so an unlabelled run
+        cannot silently pollute future PM decisions.
         """
         if not self._log_path:
             return
-        # Idempotency guard: skip if a pending entry with the same run_type already exists.
-        # Match on run_type suffix so old-format entries (4-field, no run_type) don't
-        # block new production entries, and debug runs don't block production runs.
-        if self._log_path.exists():
-            raw = self._log_path.read_text(encoding="utf-8")
-            for line in raw.splitlines():
-                if (
-                    line.startswith(f"[{trade_date} | {ticker} |")
-                    and line.endswith(f"| {run_type} | pending]")
-                ):
+        # Idempotency guard: skip if a pending entry with the same run_type
+        # already exists ANYWHERE (another machine may have logged it first
+        # for the same ticker+date). Match on run_type suffix so old-format
+        # entries (4-field, no run_type) don't block new production entries,
+        # and debug runs don't block production runs.
+        prefix = f"[{trade_date} | {ticker} |"
+        suffix = f"| {run_type} | pending]"
+        for path in self._all_log_paths():
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith(prefix) and line.endswith(suffix):
                     return
         rating = parse_rating(final_trade_decision)
         tag = f"[{trade_date} | {ticker} | {rating} | {run_type} | pending]"
@@ -67,16 +109,29 @@ class TradingMemoryLog:
     # --- Read path (Phase A) ---
 
     def load_entries(self) -> List[dict]:
-        """Parse all entries from log. Returns list of dicts."""
-        if not self._log_path or not self._log_path.exists():
-            return []
-        text = self._log_path.read_text(encoding="utf-8")
-        raw_entries = [e.strip() for e in text.split(self._SEPARATOR) if e.strip()]
-        entries = []
-        for raw in raw_entries:
-            parsed = self._parse_entry(raw)
-            if parsed:
-                entries.append(parsed)
+        """Parse all entries from every log file, merged and date-sorted.
+
+        In single-file mode this is just that one file's entries in their
+        original (already chronological, append-only) order. In
+        multi-machine mode, entries from all machines' files are combined
+        and sorted by trade date so ``get_past_context``'s "most recent
+        first" logic still works correctly across machines.
+        """
+        paths = self._all_log_paths()
+        entries: List[dict] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8")
+            raw_entries = [e.strip() for e in text.split(self._SEPARATOR) if e.strip()]
+            for raw in raw_entries:
+                parsed = self._parse_entry(raw)
+                if parsed:
+                    parsed["_source_path"] = path
+                    entries.append(parsed)
+        if len(paths) > 1:
+            # Stable sort keeps original per-file order for same-date entries.
+            entries.sort(key=lambda e: e["date"])
         return entries
 
     def get_pending_entries(self) -> List[dict]:
@@ -129,91 +184,50 @@ class TradingMemoryLog:
         holding_days: int,
         reflection: str,
     ) -> None:
-        """Replace pending tag and append REFLECTION section using atomic write.
-
-        Finds the first pending entry matching (trade_date, ticker), updates
-        its tag with return figures, and appends a REFLECTION section.  Uses
-        a temp-file + os.replace() so a crash mid-write never corrupts the log.
-        """
-        if not self._log_path or not self._log_path.exists():
-            return
-
-        text = self._log_path.read_text(encoding="utf-8")
-        blocks = text.split(self._SEPARATOR)
-
-        pending_prefix = f"[{trade_date} | {ticker} |"
-        raw_pct = f"{raw_return:+.1%}"
-        alpha_pct = f"{alpha_return:+.1%}"
-
-        updated = False
-        new_blocks = []
-        for block in blocks:
-            stripped = block.strip()
-            if not stripped:
-                new_blocks.append(block)
-                continue
-
-            lines = stripped.splitlines()
-            tag_line = lines[0].strip()
-
-            if (
-                not updated
-                and tag_line.startswith(pending_prefix)
-                and tag_line.endswith("| pending]")
-            ):
-                fields = [f.strip() for f in tag_line[1:-1].split("|")]
-                rating = fields[2]
-                # Preserve run_type from new-format pending tags
-                # New format: [date | ticker | rating | run_type | pending]
-                # Old format: [date | ticker | rating | pending]
-                if (
-                    len(fields) >= 5
-                    and fields[3] != "pending"
-                    and not self._PCT_RE.match(fields[3])
-                ):
-                    run_type = fields[3]
-                    new_tag = (
-                        f"[{trade_date} | {ticker} | {rating} | {run_type}"
-                        f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
-                    )
-                else:
-                    new_tag = (
-                        f"[{trade_date} | {ticker} | {rating}"
-                        f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
-                    )
-                rest = "\n".join(lines[1:])
-                new_blocks.append(
-                    f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}"
-                )
-                updated = True
-            else:
-                new_blocks.append(block)
-
-        if not updated:
-            return
-
-        new_blocks = self._apply_rotation(new_blocks)
-        new_text = self._SEPARATOR.join(new_blocks)
-        tmp_path = self._log_path.with_suffix(".tmp")
-        tmp_path.write_text(new_text, encoding="utf-8")
-        tmp_path.replace(self._log_path)
+        """Replace pending tag and append REFLECTION section for one entry."""
+        self.batch_update_with_outcomes([{
+            "ticker": ticker,
+            "trade_date": trade_date,
+            "raw_return": raw_return,
+            "alpha_return": alpha_return,
+            "holding_days": holding_days,
+            "reflection": reflection,
+        }])
 
     def batch_update_with_outcomes(self, updates: List[dict]) -> None:
-        """Apply multiple outcome updates in a single read + atomic write.
+        """Apply multiple outcome updates, writing each in place where it lives.
 
-        Each element of updates must have keys: ticker, trade_date,
-        raw_return, alpha_return, holding_days, reflection.
+        A pending entry may live in any machine's file (it was written by
+        whichever machine ran that decision originally). Each file among
+        ``_all_log_paths()`` is scanned once; only files that actually
+        contain a matching pending entry are rewritten (atomic temp+replace),
+        so a single-file setup behaves exactly as before and a multi-machine
+        setup never touches files that don't need it.
         """
-        if not self._log_path or not self._log_path.exists() or not updates:
+        if not updates:
             return
-
-        text = self._log_path.read_text(encoding="utf-8")
-        blocks = text.split(self._SEPARATOR)
-
-        # Build lookup keyed by (trade_date, ticker) for O(1) dispatch
         update_map = {(u["trade_date"], u["ticker"]): u for u in updates}
 
+        for path in self._all_log_paths():
+            if not update_map or not path.exists():
+                continue
+            matched = self._apply_updates_to_file(path, update_map)
+            if matched:
+                # Consumed matches so later files don't re-apply them.
+                for key in matched:
+                    update_map.pop(key, None)
+
+    def _apply_updates_to_file(self, path: Path, update_map: dict) -> List[tuple]:
+        """Rewrite ``path`` in place for any pending entry matching update_map.
+
+        Returns the list of (trade_date, ticker) keys that were matched and
+        applied, so the caller can remove them from the pending pool.
+        """
+        text = path.read_text(encoding="utf-8")
+        blocks = text.split(self._SEPARATOR)
+
         new_blocks = []
+        matched_keys: List[tuple] = []
         for block in blocks:
             stripped = block.strip()
             if not stripped:
@@ -222,15 +236,18 @@ class TradingMemoryLog:
 
             lines = stripped.splitlines()
             tag_line = lines[0].strip()
+            applied = False
 
-            matched = False
-            for (trade_date, ticker), upd in list(update_map.items()):
+            for (trade_date, ticker), upd in update_map.items():
                 pending_prefix = f"[{trade_date} | {ticker} |"
                 if tag_line.startswith(pending_prefix) and tag_line.endswith("| pending]"):
                     fields = [f.strip() for f in tag_line[1:-1].split("|")]
                     rating = fields[2]
                     raw_pct = f"{upd['raw_return']:+.1%}"
                     alpha_pct = f"{upd['alpha_return']:+.1%}"
+                    # Preserve run_type from new-format pending tags.
+                    # New format: [date | ticker | rating | run_type | pending]
+                    # Old format: [date | ticker | rating | pending]
                     if (
                         len(fields) >= 5
                         and fields[3] != "pending"
@@ -250,18 +267,22 @@ class TradingMemoryLog:
                     new_blocks.append(
                         f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
                     )
-                    del update_map[(trade_date, ticker)]
-                    matched = True
+                    matched_keys.append((trade_date, ticker))
+                    applied = True
                     break
 
-            if not matched:
+            if not applied:
                 new_blocks.append(block)
+
+        if not matched_keys:
+            return []
 
         new_blocks = self._apply_rotation(new_blocks)
         new_text = self._SEPARATOR.join(new_blocks)
-        tmp_path = self._log_path.with_suffix(".tmp")
+        tmp_path = path.with_suffix(".tmp")
         tmp_path.write_text(new_text, encoding="utf-8")
-        tmp_path.replace(self._log_path)
+        tmp_path.replace(path)
+        return matched_keys
 
     # --- Helpers ---
 

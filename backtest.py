@@ -4,8 +4,11 @@ Usage:
     python backtest.py --ticker VCB --date 2026-05-01 --provider deepseek-pro
     python backtest.py --ticker HPG --date-range 2026-05-01:2026-05-31 --provider deepseek
 
-Results are written to ~/.tradingagents/calibration/calibration_store.db.
-Run calibration_report.py to analyse accuracy over time.
+Results are written to ~/.tradingagents/calibration/calibration_store_<hostname>.db
+— one file per machine (env TRADINGAGENTS_CALIBRATION_DIR to point this at a
+shared folder, e.g. OneDrive; each machine still only ever writes its own
+file, so cloud sync stays safe). Run calibration_report.py to see combined
+accuracy across every machine's file.
 """
 import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -13,7 +16,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import argparse
 import json
 import logging
+import os
 import re
+import socket
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,8 +26,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
-CALIBRATION_DIR = Path.home() / ".tradingagents" / "calibration"
-CALIBRATION_DB  = CALIBRATION_DIR / "calibration_store.db"
+CALIBRATION_DIR = Path(os.getenv(
+    "TRADINGAGENTS_CALIBRATION_DIR", str(Path.home() / ".tradingagents" / "calibration")
+)).expanduser()
+_SAFE_HOST = re.sub(
+    r"[^A-Za-z0-9_-]+", "_",
+    os.getenv("TRADINGAGENTS_CALIBRATION_HOSTNAME") or socket.gethostname(),
+).strip("_") or "machine"
+# Per-machine file — the ONLY file this process ever writes to. Safe under
+# OneDrive/cloud sync because each device owns a distinct file (see memory.py
+# for the same pattern applied to trading_memory.md).
+CALIBRATION_DB = CALIBRATION_DIR / f"calibration_store_{_SAFE_HOST}.db"
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS calibration_runs (
@@ -302,12 +316,6 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
-
-    logging.warning(
-        "MarketWire news (get_marketwire_news) is BACKTEST-LEAKY: "
-        "news window uses datetime.now(), not trade_date. "
-        "News articles published after the trade date may be included."
-    )
 
     dates = [args.date] if args.date else _expand_date_range(args.date_range)
     run_backtest(args.ticker, dates, args.provider)
