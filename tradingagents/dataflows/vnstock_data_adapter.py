@@ -110,6 +110,36 @@ def _assert_unified_ui():
 import re as _re
 
 
+def _parse_article_datetime(raw) -> Optional[datetime]:
+    """Parse ngày publish của bài crawl RSS (vnstock_news / feedparser).
+
+    Field ``publish_time`` là RFC-822 (vd 'Sat, 04 Jul 2026 21:45:00 +07'),
+    KHÔNG phải ISO-8601 — ``datetime.fromisoformat()`` fail 100% trên format
+    này (đã verify: toàn bộ 60/60 bài trong 1 lần crawl bị parse fail), khiến
+    mọi bài bị coi "undated" và vô hiệu hoá filter theo ticker phía dưới.
+
+    Offset trong dữ liệu này chỉ có 2 chữ số ('+07') thay vì chuẩn RFC-822
+    4 chữ số ('+0700') — nếu đưa thẳng vào ``email.utils.parsedate_to_datetime``
+    sẽ bị hiểu sai thành +00:07 (7 PHÚT) chứ không phải +07:00 (giờ VN). Chuẩn
+    hoá offset trước khi parse. Trả về datetime NAIVE (giờ địa phương VN, đã
+    bỏ tzinfo) để so sánh thẳng với ngày dạng YYYY-MM-DD.
+    """
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    normalized = _re.sub(r"([+-]\d{2})$", r"\g<1>00", raw)
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(normalized)
+        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(raw[:19])
+    except Exception:
+        return None
+
+
 def _parse_quarter_period(series):
     """Parse 'YYYY-Qn' period strings to their estimated publication dates.
 
@@ -792,19 +822,27 @@ def get_news(
         _is_backtest = _bt_date is not None
         end_cap = min(end_date, _bt_date) if _is_backtest else end_date
 
-        # Best-effort date filter: keep articles with published date ≤ end_cap
+        # Best-effort date filter: keep articles with published date ≤ end_cap.
+        # Dùng _parse_article_datetime (RFC-822 + chuẩn hoá offset) — trước đây
+        # dùng fromisoformat() nên 100% bài bị coi "undated" (publish_time thực
+        # tế là RFC-822, không phải ISO), khiến filter theo ticker dưới đây
+        # luôn thấy `dated` rỗng và rơi vào nhánh fallback.
         end_dt_obj = datetime.strptime(end_cap, "%Y-%m-%d")
         def _article_date(a) -> Optional[datetime]:
             raw = a.get("publish_time") or a.get("published") or a.get("date") or ""
-            try:
-                return datetime.fromisoformat(str(raw)[:19])
-            except Exception:
-                return None
+            return _parse_article_datetime(raw)
 
         dated   = [a for a in articles if _article_date(a) is not None and _article_date(a) <= end_dt_obj]
         undated = [a for a in articles if _article_date(a) is None]
 
-        relevant = [a for a in dated if sym in str(a.get("title", "")).upper()]
+        # Candidate pool để tìm ticker khác nhau theo mode:
+        # - Backtest: CHỈ `dated` (đã verify ngày ≤ cutoff) — bài "undated" có
+        #   thể là tin xuất bản SAU trade_date, đưa vào sẽ rò rỉ tương lai.
+        # - Production: `dated + undated` — không có rủi ro rò rỉ, tìm rộng
+        #   trên toàn bộ crawl để không bỏ lỡ tin ticker chỉ vì thiếu ngày.
+        candidates = dated if _is_backtest else (dated + undated)
+        relevant = [a for a in candidates if sym in str(a.get("title", "")).upper()]
+
         if not relevant:
             if _is_backtest:
                 # Backtest: KHÔNG bơm tin hiện tại làm fallback (rò rỉ tương lai).
@@ -815,21 +853,36 @@ def get_news(
                     f"# Backtest mode: bỏ qua fallback tin hiện tại để tránh data leakage.\n"
                     f"# Dựa vào phân tích cơ bản và kỹ thuật.\n"
                 )
-            # Production real-time: giữ hành vi cũ — top tin gần nhất làm context.
-            relevant = (dated + undated)[:10]
-        if relevant:
-            lines = [
-                f"[{a.get('publish_time') or a.get('published', 'date unknown')}] {a.get('title', 'No title')}"
-                for a in relevant[:15]
-            ]
-            note = ("⚠ News source provides current articles only; "
-                    f"historical filtering applied where publication date available.\n")
-            header = (
+            # Production: KHÔNG bơm "top N bất kỳ chủ đề" làm fallback nữa —
+            # đã gây báo cáo lẫn tin macro/vàng thế giới hoàn toàn không liên
+            # quan ticker (vd PNJ), khiến agent hiểu lầm đó là tin về PNJ và
+            # bỏ lỡ tin thật (vụ giám đốc bị bắt, cổ phiếu bị bán tháo) không
+            # nằm trong 60 bài crawl từ cafebiz/vietstock/vnexpress. Báo rõ
+            # KHÔNG tìm thấy, để agent dựa vào get_marketwire_news/FA/TA thay
+            # vì tự suy diễn từ tin không liên quan.
+            return (
                 f"# News for {sym} (target window: {start_date} to {end_cap})\n"
-                f"# Source: vnstock_news Crawler ({len(relevant)} articles)\n"
-                f"# {note}\n"
+                f"# Không tìm thấy tin nào chứa '{sym}' trong {len(candidates)} bài "
+                f"crawl gần nhất (cafebiz/vietstock/vnexpress).\n"
+                f"# Nguồn RSS này KHÔNG có cafef.vn — nếu tin quan trọng chỉ đăng ở "
+                f"cafef, sẽ không xuất hiện ở đây.\n"
+                f"# Dựa vào phân tích cơ bản/kỹ thuật; get_marketwire_news hoặc "
+                f"get_global_news có thể có thêm ngữ cảnh vĩ mô (KHÔNG phải tin "
+                f"riêng về {sym}).\n"
             )
-            return header + "\n".join(lines)
+
+        lines = [
+            f"[{a.get('publish_time') or a.get('published', 'date unknown')}] {a.get('title', 'No title')}"
+            for a in relevant[:15]
+        ]
+        note = ("⚠ News source provides current articles only; "
+                f"historical filtering applied where publication date available.\n")
+        header = (
+            f"# News for {sym} (target window: {start_date} to {end_cap})\n"
+            f"# Source: vnstock_news Crawler ({len(relevant)} articles)\n"
+            f"# {note}\n"
+        )
+        return header + "\n".join(lines)
     except ImportError:
         pass
     except Exception as exc:
