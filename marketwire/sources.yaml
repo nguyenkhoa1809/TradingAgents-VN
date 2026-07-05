@@ -108,9 +108,27 @@ sources:
     lang: vi
     region: vn
 
+  - name: CafeF - Doanh nghiệp
+    kind: rss
+    url: https://cafef.vn/doanh-nghiep.rss
+    lang: vi
+    region: vn
+
   - name: VnExpress - Kinh doanh
     kind: rss
     url: https://vnexpress.net/rss/kinh-doanh.rss
+    lang: vi
+    region: vn
+
+  - name: Tuổi Trẻ - Kinh doanh
+    kind: rss
+    url: https://tuoitre.vn/rss/kinh-doanh.rss
+    lang: vi
+    region: vn
+
+  - name: Thanh Niên - Kinh tế
+    kind: rss
+    url: https://thanhnien.vn/rss/kinh-te.rss
     lang: vi
     region: vn
 

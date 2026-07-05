@@ -763,24 +763,61 @@ def get_income_statement(
 # News — VN-specific
 # ---------------------------------------------------------------------------
 
-# Working vnstock_news sites (verified: cafebiz, vietstock have RSS feeds)
-_VN_NEWS_SITES = ["cafebiz", "vietstock", "vnexpress"]
+def _vn_rss_feeds() -> list:
+    """Đọc danh sách feed RSS tiếng Việt trực tiếp từ marketwire/sources.yaml.
+
+    Trước đây dùng vnstock_news.Crawler(site_name=...) với 1 danh sách site cố
+    định (_VN_NEWS_SITES = cafebiz/vietstock/vnexpress) — điều tra cho thấy dù
+    TÊN site "khớp", CATEGORY thực tế mà vnstock_news crawl hoàn toàn khác với
+    những gì marketwire/sources.yaml dùng (vd vietstock trong vnstock_news là
+    vĩ mô/chứng khoán thế giới, KHÔNG phải chuyên mục cổ phiếu VN mà marketwire
+    dùng), và cafef.vn (nơi tin ticker cụ thể xuất hiện rõ nhất) không có mặt
+    trong _VN_NEWS_SITES dù đã có sẵn trong sources.yaml.
+
+    Đọc trực tiếp sources.yaml (kind=rss, region=vn, active != False) đảm bảo
+    TradingAgents và MarketWire luôn dùng CHUNG một danh sách nguồn — thêm/bớt
+    feed ở sources.yaml tự động áp dụng cho cả 2 phía, không còn lệch nhau.
+    """
+    try:
+        import yaml
+        from tradingagents.dataflows.config import get_config
+        cfg_path = Path(get_config().get("marketwire_sources_path", "")).expanduser()
+        if not cfg_path.exists():
+            return []
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        return [
+            {"name": s.get("name", s.get("url", "")), "url": s["url"]}
+            for s in cfg.get("sources", [])
+            if s.get("kind") == "rss" and s.get("region") == "vn" and s.get("active") is not False
+        ]
+    except Exception:
+        return []
 
 
 def _crawl_vn_news(limit_per_feed: int = 20) -> list:
-    """Fetch articles from working VN financial news sites via vnstock_news.
+    """Fetch bài từ đúng các feed RSS tiếng Việt trong marketwire/sources.yaml
+    (feedparser trực tiếp — không qua vnstock_news.Crawler).
 
-    Tries each site in priority order and returns combined article list.
-    Silently skips any site that errors — degrades to fewer sources, not failure.
+    Mỗi bài trả về dict {title, description, url, published: datetime|None}.
+    published dùng feedparser's published_parsed (time.struct_time đã parse
+    sẵn) — đáng tin hơn tự parse chuỗi RFC-822 thô.
+    Bỏ qua feed nào lỗi — giảm số nguồn, không fail toàn bộ.
     """
-    from vnstock_news import Crawler  # type: ignore
+    import feedparser
+    feeds = _vn_rss_feeds()
     articles: list = []
-    for site in _VN_NEWS_SITES:
+    for feed_cfg in feeds:
         try:
-            batch = Crawler(site_name=site).get_articles_from_feed(
-                limit_per_feed=limit_per_feed
-            ) or []
-            articles.extend(batch)
+            parsed = feedparser.parse(feed_cfg["url"])
+            for entry in parsed.entries[:limit_per_feed]:
+                pub_struct = entry.get("published_parsed") or entry.get("updated_parsed")
+                pub_dt = datetime(*pub_struct[:6]) if pub_struct else None
+                articles.append({
+                    "title": entry.get("title", ""),
+                    "description": entry.get("summary", ""),
+                    "url": entry.get("link", ""),
+                    "published": pub_dt,
+                })
         except Exception:
             continue
     return articles
@@ -793,8 +830,10 @@ def get_news(
 ) -> str:
     """Fetch news for a VN equity.
 
-    Uses vnstock_news if available; otherwise falls back to a polite error
-    message so the caller can cascade to yfinance.
+    Crawls the same RSS feeds marketwire/sources.yaml uses (kind=rss,
+    region=vn) directly via feedparser — see _vn_rss_feeds(). Falls back to a
+    polite error message so the caller can cascade to yfinance if sources.yaml
+    is missing or every feed fails.
 
     Args:
         ticker:     VN ticker symbol.
@@ -808,11 +847,10 @@ def get_news(
 
     sym = ticker.upper()
 
-    # Attempt vnstock_news (Crawler API) — try financial sites in priority order
-    # NOTE: RSS/crawler fetches CURRENT news only, not historical archives.
+    # NOTE: RSS crawl fetches CURRENT news only, not historical archives.
     # For historical analysis dates, treat news as approximate context only.
     try:
-        from vnstock_news import Crawler  # type: ignore
+        feeds = _vn_rss_feeds()
         articles = _crawl_vn_news(limit_per_feed=20)
 
         # Task 4B: RSS crawler chỉ trả tin HIỆN TẠI. Khi backtest (ContextVar set),
@@ -822,15 +860,15 @@ def get_news(
         _is_backtest = _bt_date is not None
         end_cap = min(end_date, _bt_date) if _is_backtest else end_date
 
-        # Best-effort date filter: keep articles with published date ≤ end_cap.
-        # Dùng _parse_article_datetime (RFC-822 + chuẩn hoá offset) — trước đây
-        # dùng fromisoformat() nên 100% bài bị coi "undated" (publish_time thực
-        # tế là RFC-822, không phải ISO), khiến filter theo ticker dưới đây
-        # luôn thấy `dated` rỗng và rơi vào nhánh fallback.
+        # published đã là datetime (từ feedparser's published_parsed) hoặc None
+        # — không cần parse chuỗi nữa. Giữ _parse_article_datetime() làm dự
+        # phòng nếu published lỡ là string (không nên xảy ra với luồng mới).
         end_dt_obj = datetime.strptime(end_cap, "%Y-%m-%d")
         def _article_date(a) -> Optional[datetime]:
-            raw = a.get("publish_time") or a.get("published") or a.get("date") or ""
-            return _parse_article_datetime(raw)
+            raw = a.get("published")
+            if isinstance(raw, datetime):
+                return raw
+            return _parse_article_datetime(raw or "")
 
         dated   = [a for a in articles if _article_date(a) is not None and _article_date(a) <= end_dt_obj]
         undated = [a for a in articles if _article_date(a) is None]
@@ -849,44 +887,37 @@ def get_news(
                 # RSS live không có kho lịch sử ⇒ báo thiếu, để agent dựa vào FA/TA.
                 return (
                     f"# News for {sym} (target window: {start_date} to {end_cap})\n"
-                    f"# vnstock_news RSS chỉ có tin hiện tại — KHÔNG có tin lịch sử ≤ {end_cap}.\n"
+                    f"# RSS chỉ có tin hiện tại — KHÔNG có tin lịch sử ≤ {end_cap}.\n"
                     f"# Backtest mode: bỏ qua fallback tin hiện tại để tránh data leakage.\n"
                     f"# Dựa vào phân tích cơ bản và kỹ thuật.\n"
                 )
-            # Production: KHÔNG bơm "top N bất kỳ chủ đề" làm fallback nữa —
-            # đã gây báo cáo lẫn tin macro/vàng thế giới hoàn toàn không liên
-            # quan ticker (vd PNJ), khiến agent hiểu lầm đó là tin về PNJ và
-            # bỏ lỡ tin thật (vụ giám đốc bị bắt, cổ phiếu bị bán tháo) không
-            # nằm trong 60 bài crawl từ cafebiz/vietstock/vnexpress. Báo rõ
-            # KHÔNG tìm thấy, để agent dựa vào get_marketwire_news/FA/TA thay
-            # vì tự suy diễn từ tin không liên quan.
+            # Production: KHÔNG bơm "top N bất kỳ chủ đề" làm fallback — sẽ
+            # khiến agent hiểu lầm tin không liên quan là tin về ticker này.
+            # Báo rõ KHÔNG tìm thấy, để agent dựa vào get_marketwire_news/FA/TA.
+            src_names = ", ".join(f["name"] for f in feeds) or "(sources.yaml rỗng/không đọc được)"
             return (
                 f"# News for {sym} (target window: {start_date} to {end_cap})\n"
                 f"# Không tìm thấy tin nào chứa '{sym}' trong {len(candidates)} bài "
-                f"crawl gần nhất (cafebiz/vietstock/vnexpress).\n"
-                f"# Nguồn RSS này KHÔNG có cafef.vn — nếu tin quan trọng chỉ đăng ở "
-                f"cafef, sẽ không xuất hiện ở đây.\n"
+                f"crawl gần nhất từ: {src_names}.\n"
                 f"# Dựa vào phân tích cơ bản/kỹ thuật; get_marketwire_news hoặc "
                 f"get_global_news có thể có thêm ngữ cảnh vĩ mô (KHÔNG phải tin "
                 f"riêng về {sym}).\n"
             )
 
         lines = [
-            f"[{a.get('publish_time') or a.get('published', 'date unknown')}] {a.get('title', 'No title')}"
+            f"[{a.get('published') or 'date unknown'}] {a.get('title', 'No title')}"
             for a in relevant[:15]
         ]
         note = ("⚠ News source provides current articles only; "
                 f"historical filtering applied where publication date available.\n")
         header = (
             f"# News for {sym} (target window: {start_date} to {end_cap})\n"
-            f"# Source: vnstock_news Crawler ({len(relevant)} articles)\n"
+            f"# Source: RSS ({len(relevant)} articles, {len(feeds)} feed từ marketwire/sources.yaml)\n"
             f"# {note}\n"
         )
         return header + "\n".join(lines)
-    except ImportError:
-        pass
     except Exception as exc:
-        return f"# News for {sym}\nvnstock_news error: {exc}\n"
+        return f"# News for {sym}\nRSS crawl error: {exc}\n"
 
     # CRITICAL: Do NOT fall back to yfinance for VN tickers.
     # Plain ticker "MBB" on yfinance resolves to iShares MBS ETF (US), not
@@ -895,7 +926,7 @@ def get_news(
     # but does NOT fabricate content from wrong-market sources.
     return (
         f"# News for {sym} (Vietnamese equity, HOSE/HNX listed)\n"
-        f"# vnstock_news data unavailable for this ticker.\n"
+        f"# RSS news data unavailable for this ticker.\n"
         f"# WARNING: Do NOT use yfinance/Yahoo Finance data for ticker '{sym}' —\n"
         f"#   '{sym}' on US markets is a DIFFERENT security (e.g. MBB = iShares MBS ETF).\n"
         f"# Rely on fundamental and technical analysis instead.\n"

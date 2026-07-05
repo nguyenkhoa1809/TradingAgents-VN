@@ -26,6 +26,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MEMORY_LOG_DIR":       "memory_log_dir",
     "TRADINGAGENTS_MEMORY_LOG_HOSTNAME":  "memory_log_hostname",
     "TRADINGAGENTS_MARKETWIRE_DB":        "marketwire_db_path",
+    "TRADINGAGENTS_MARKETWIRE_SOURCES":   "marketwire_sources_path",
 }
 
 
@@ -58,6 +59,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # MarketWire SQLite DB (Task 4B) — offline news/broker-note feed, lives at
     # marketwire/data/marketwire.db as a sibling of tradingagents/ in this repo.
     "marketwire_db_path": os.getenv("TRADINGAGENTS_MARKETWIRE_DB", os.path.join(_REPO_ROOT, "marketwire", "data", "marketwire.db")),
+    # MarketWire sources.yaml — TradingAgents' get_news() (VN ticker) đọc trực
+    # tiếp danh sách feed RSS tiếng Việt từ đây, KHÔNG dùng danh sách riêng
+    # (_VN_NEWS_SITES cũ) — đảm bảo 2 pipeline đọc cùng 1 nguồn, không lệch.
+    "marketwire_sources_path": os.getenv("TRADINGAGENTS_MARKETWIRE_SOURCES", os.path.join(_REPO_ROOT, "marketwire", "sources.yaml")),
     # Multi-machine mode: when set (e.g. a shared OneDrive folder), each
     # machine writes ONLY to its own trading_memory_<hostname>.md inside this
     # directory (single-writer-per-file — safe under cloud file sync), while

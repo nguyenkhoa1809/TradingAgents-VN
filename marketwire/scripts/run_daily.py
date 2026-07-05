@@ -15,10 +15,12 @@ import subprocess
 import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 PY = sys.executable
+STALE_AFTER_DAYS = 2
 
 
 def step(name: str, cmd: str, cwd: Path, critical: bool = True):
@@ -50,6 +52,33 @@ def step(name: str, cmd: str, cwd: Path, critical: bool = True):
         print(f"  → Tiếp tục các bước còn lại.")
 
     return (name, ok, elapsed, rc)
+
+
+def check_staleness(days: int = STALE_AFTER_DAYS) -> None:
+    """Cảnh báo nếu bài mới nhất trong DB cũ hơn `days` ngày.
+
+    Không chặn pipeline — chỉ log rõ để phát hiện sớm trường hợp fetch.py
+    trả rc=0 (không lỗi) nhưng thực chất không lấy được bài mới nào (vd RSS
+    đổi định dạng, DNS chết) — đúng kiểu lỗi âm thầm đã gây ra gap coverage
+    của PNJ.
+    """
+    print("\n=== Stale check ===")
+    sys.path.insert(0, str(ROOT / "ingest"))
+    from db import conn
+    with conn() as c:
+        row = c.execute("SELECT MAX(published) AS latest FROM articles").fetchone()
+    latest = row["latest"] if row else None
+    if not latest:
+        print("  [!] CẢNH BÁO: DB không có bài viết nào.")
+        return
+    latest_dt = datetime.fromisoformat(latest).replace(tzinfo=None)
+    age = datetime.now() - latest_dt
+    if age > timedelta(days=days):
+        print(f"  [!] CẢNH BÁO: bài mới nhất trong DB từ {latest_dt.date()} "
+              f"({age.days} ngày trước, ngưỡng {days} ngày) — pipeline có thể "
+              f"đã ngừng cập nhật dữ liệu thật dù các bước trên báo OK.")
+    else:
+        print(f"  ✓ DB fresh — bài mới nhất từ {latest_dt.date()} ({age.days} ngày trước).")
 
 
 def print_summary(results: list) -> None:
@@ -88,6 +117,7 @@ def main():
     # trong DB dù fetch/summarize có fail một phần.
     results.append(step("Render web", "render.py", ROOT / "web", critical=False))
 
+    check_staleness()
     print_summary(results)
 
 
