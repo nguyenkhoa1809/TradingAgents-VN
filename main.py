@@ -1,10 +1,14 @@
 """
 main.py — Quick Reference
 ──────────────────────────────────────────────────────────────────
+CÁCH CHẠY:
+  python main.py --ticker PNJ                    # 1 mã
+  python main.py --ticker PNJ,VCB,TCB             # nhiều mã (phân tách bởi dấu phẩy)
+  python main.py --ticker PNJ --date 2026-07-05   # ngày cụ thể (mặc định: hôm nay)
+  python main.py --ticker PNJ --dev               # dev mode (bỏ validator gate)
+
 Thay đổi thường gặp:
 
-  TICKERS           dòng 152  — mã CK cần phân tích, vd: ["VCB", "TCB"]
-  TRADE_DATE        dòng 153  — ngày phân tích (mặc định: hôm nay)
   OUTPUT_LANGUAGE   dòng 157  — "Vietnamese" / "English" — ngôn ngữ mọi báo cáo
   PROVIDER          dòng 186  — model LLM chính (deepseek-pro / claude / openrouter / ...)
   ANALYSTS          dòng 234  — bật/tắt analyst (market / fundamentals / news / social)
@@ -27,6 +31,7 @@ API keys (.env):
 import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+import argparse
 import os
 import re as _re
 import webbrowser
@@ -168,10 +173,15 @@ def _refine_vn_prose(sections: dict[str, str], target_keys: list[str]) -> tuple[
     return refined, {"model": model, "tokens_in": glm_tok_in, "tokens_out": glm_tok_out}
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# Single ticker:  TICKERS = ["VCB"]
-# Multiple:       TICKERS = ["VCB", "TCB", "BID", "GMD", "TCB", "MBB", "FPT", "HPG", "PHR", "GVR", "VPB"]]
-TICKERS    = ["TCB"]
-TRADE_DATE = date.today().strftime("%Y-%m-%d")  # or fixed: "2026-01-28"
+_parser = argparse.ArgumentParser(add_help=True)
+_parser.add_argument("--ticker", required=True,
+                      help="Mã CK, phân tách bởi dấu phẩy nếu nhiều mã — vd: PNJ hoặc PNJ,VCB,TCB")
+_parser.add_argument("--date", default=None,
+                      help="Ngày phân tích YYYY-MM-DD (mặc định: hôm nay)")
+_args, _ = _parser.parse_known_args()
+
+TICKERS    = [t.strip().upper() for t in _args.ticker.split(",") if t.strip()]
+TRADE_DATE = _args.date or date.today().strftime("%Y-%m-%d")
 
 # OUTPUT LANGUAGE — ngôn ngữ của TẤT CẢ báo cáo (tranh luận nội bộ vẫn English)
 # "Vietnamese" → mọi analyst viết tiếng Việt từ gốc. "English" → mặc định.
