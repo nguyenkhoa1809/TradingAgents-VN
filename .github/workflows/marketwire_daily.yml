@@ -2,8 +2,9 @@ name: MarketWire Daily
 
 on:
   schedule:
-    # 1:15 UTC + 7h = 8:15 ICT cùng ngày (không lệch ngày UTC/ICT) -> 1-6 UTC = thứ 2-7 ICT, đúng.
-    - cron: '15 1 * * 1-6'  # 08:15 ICT (UTC+7) thứ 2 đến thứ 7
+    # TEST TẠM #2 — 7:12 UTC hôm nay, verify sau khi chuyển repo sang Public.
+    # Đổi lại '15 1 * * 1-6' (08:15 ICT) ngay sau khi confirm xong.
+    - cron: '12 7 * * *'
   workflow_dispatch:          # trigger thủ công
 
 jobs:
