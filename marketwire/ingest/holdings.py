@@ -1,41 +1,34 @@
-"""Đọc holdings.csv, expose set of tickers + per-fund breakdown.
+"""Đọc coverage.csv, expose set of tickers đang cover + weight.
 
-Default format CSV: ticker,fund,weight,shares
-Sửa load() nếu format thực tế của KIS export khác.
+Format CSV: ticker,weight (weight dạng chuỗi phần trăm, vd "9.00%")
 """
 import csv
 from pathlib import Path
-from collections import defaultdict
 
-HOLDINGS_CSV = Path(__file__).parent.parent / "data" / "holdings.csv"
+HOLDINGS_CSV = Path(__file__).parent.parent / "data" / "coverage.csv"
 
 
 def load():
-    """Return dict: {ticker: [{fund, weight, shares}, ...]}"""
+    """Return dict: {ticker: weight (float, %)}"""
     if not HOLDINGS_CSV.exists():
         return {}
 
-    holdings = defaultdict(list)
+    holdings = {}
     with open(HOLDINGS_CSV, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             ticker = row["ticker"].strip().upper()
-            holdings[ticker].append({
-                "fund": row["fund"].strip(),
-                "weight": float(row["weight"]),
-                "shares": int(row["shares"]),
-            })
-    return dict(holdings)
+            holdings[ticker] = float(row["weight"].strip().rstrip("%"))
+    return holdings
 
 
 def current_tickers():
-    """Set các mã đang nắm — dùng để filter trong summarize."""
+    """Set các mã đang cover — dùng để filter trong summarize."""
     return set(load().keys())
 
 
 if __name__ == "__main__":
     h = load()
-    print(f"Holdings: {len(h)} mã across funds")
-    for t, positions in sorted(h.items()):
-        funds = ", ".join(f"{p['fund']} {p['weight']}%" for p in positions)
-        print(f"  {t}: {funds}")
+    print(f"Coverage: {len(h)} mã")
+    for t, w in sorted(h.items(), key=lambda x: -x[1]):
+        print(f"  {t}: {w}%")

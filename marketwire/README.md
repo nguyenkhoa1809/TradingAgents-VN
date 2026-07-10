@@ -28,7 +28,7 @@ marketwire/
 ├── migrations/
 ├── data/
 │   ├── marketwire.db
-│   └── holdings.csv      # Update mỗi sáng từ KIS export
+│   └── coverage.csv      # Update mỗi sáng từ KIS export
 ├── ingest/
 │   ├── db.py
 │   ├── llm.py            # Provider abstraction (Claude / DeepSeek)
@@ -91,14 +91,14 @@ DEEPSEEK_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...   # chỉ cần nếu dùng provider: claude
 ```
 
-## Holdings CSV format
+## Coverage CSV format
 
-`data/holdings.csv` — sửa `ingest/holdings.py` nếu KIS export format khác:
+`data/coverage.csv` — sửa `ingest/holdings.py` nếu format khác:
 
 ```csv
-ticker,fund,weight,shares
-VCB,TGF,8.5,150000
-FPT,KDEF,8.0,40000
+ticker,weight
+VCB,8.50%
+FPT,8.00%
 ```
 
 ## Web views
