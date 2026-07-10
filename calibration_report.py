@@ -19,6 +19,10 @@ CALIBRATION_DIR = Path(os.getenv(
 )).expanduser()
 
 _MIN_SAMPLE = 30
+# Duplicated from backtest.py — kept as plain constants here rather than
+# importing that module, to keep the two CLI entry points independent.
+_BULLISH = {"BUY", "STRONG BUY", "OVERWEIGHT"}
+_BEARISH = {"SELL", "STRONG SELL", "UNDERWEIGHT"}
 _EV_BINS = [
     (float("-inf"), -10, "EV < -10%"),
     (-10,  -5, "-10% ≤ EV < -5%"),
@@ -66,6 +70,85 @@ def _load(ticker_filter: str | None, resolved_only: bool) -> list[dict]:
     return rows
 
 
+def _load_transitions(ticker_filter: str | None) -> list[dict]:
+    sql = "SELECT * FROM signal_transitions WHERE 1=1"
+    params = []
+    if ticker_filter:
+        sql += " AND ticker = ?"
+        params.append(ticker_filter.upper())
+
+    rows: list[dict] = []
+    for db_path in _calibration_db_paths():
+        con = sqlite3.connect(str(db_path))
+        con.row_factory = sqlite3.Row
+        try:
+            for r in con.execute(sql, params).fetchall():
+                d = dict(r)
+                d["_source_host"] = db_path.stem.removeprefix("calibration_store_")
+                rows.append(d)
+        except sqlite3.OperationalError:
+            pass  # older DB file predates the signal_transitions table
+        finally:
+            con.close()
+    return rows
+
+
+def _transition_win(row: dict) -> int | None:
+    """1 if the new signal's direction played out correctly by exit, 0 if not,
+    None if unresolved or the new rating has no directional expectation (e.g. HOLD)."""
+    if row["exit_date"] is None or row["return_pct"] is None:
+        return None
+    rating = (row["new_rating"] or "").upper()
+    if rating in _BULLISH:
+        return 1 if row["return_pct"] > 0 else 0
+    if rating in _BEARISH:
+        return 1 if row["return_pct"] < 0 else 0
+    return None
+
+
+def _print_transition_report(rows: list[dict]) -> None:
+    from collections import defaultdict
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for r in rows:
+        groups[(r["prev_rating"] or "—", r["new_rating"] or "—")].append(r)
+
+    print(f"\n{'═'*60}")
+    print("  Signal Transition Accuracy")
+    print(f"{'═'*60}")
+
+    for prev, new in sorted(groups):
+        grp     = groups[(prev, new)]
+        closed  = [r for r in grp if r["exit_date"]]
+        scored  = [r for r in closed if _transition_win(r) is not None]
+        wins    = [r for r in scored if _transition_win(r) == 1]
+        avg_ret = (
+            sum(r["return_pct"] for r in closed if r["return_pct"] is not None) / len(closed)
+            if closed else None
+        )
+        avg_hold = (
+            sum(r["holding_days"] for r in closed if r["holding_days"] is not None) / len(closed)
+            if closed else None
+        )
+        win_str  = f"win rate {len(wins)/len(scored)*100:.0f}%" if scored else "win rate —"
+        ret_str  = f"avg return {avg_ret:+.1f}%" if avg_ret is not None else "avg return —"
+        hold_str = f"avg holding {avg_hold:.0f} days" if avg_hold is not None else "avg holding —"
+        label = f"{prev} → {new}"
+        print(f"  {label:<22}: {len(grp)} transitions ({len(closed)} closed), {win_str}, {ret_str}, {hold_str}")
+
+    high_ev = [
+        r for r in rows
+        if (r.get("conviction") or "").upper() in ("CAO", "HIGH")
+        and r.get("ev_pct") is not None and r["ev_pct"] > 10
+        and r["exit_date"]
+    ]
+    scored_hi = [r for r in high_ev if _transition_win(r) is not None]
+    if scored_hi:
+        wins_hi = [r for r in scored_hi if _transition_win(r) == 1]
+        print(f"\n  Top performing: Conviction HIGH, EV > 10% → win rate "
+              f"{len(wins_hi)/len(scored_hi)*100:.0f}% (n={len(scored_hi)})")
+    print()
+
+
 def _print_table(title: str, rows: list[dict], group_key: str) -> None:
     from collections import defaultdict
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -100,7 +183,7 @@ def _print_table(title: str, rows: list[dict], group_key: str) -> None:
     print()
 
 
-def _summary(rows: list[dict]) -> None:
+def _summary(rows: list[dict], ticker_filter: str | None = None) -> None:
     hosts = sorted({r["_source_host"] for r in rows})
     print("\n" + "═"*60)
     print("  CALIBRATION REPORT — TradingAgents-VN")
@@ -117,6 +200,10 @@ def _summary(rows: list[dict]) -> None:
 
     # Rating view
     _print_table("By Rating", rows, "rating")
+
+    transitions = _load_transitions(ticker_filter)
+    if transitions:
+        _print_transition_report(transitions)
 
 
 def main() -> None:
@@ -135,7 +222,7 @@ def main() -> None:
         print("No records found.")
         return
 
-    _summary(rows)
+    _summary(rows, args.ticker)
 
 
 if __name__ == "__main__":
