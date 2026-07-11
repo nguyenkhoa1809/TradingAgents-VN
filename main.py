@@ -295,6 +295,17 @@ _N_SAMPLES = int(config.get("consistency_samples", 1) or 1)
 print(f"Pipeline mode: {PIPELINE_MODE}  |  provider: {PROVIDER}  |  "
       f"samples: {_N_SAMPLES}  |  tickers: {', '.join(TICKERS)}")
 
+# Self-consistency: in ước tính SỐ RUN + CHI PHÍ trước khi chạy khi samples > 1
+# (heuristic thô — số thật in ra sau mỗi mã qua token counter thật).
+if _N_SAMPLES > 1:
+    from tradingagents.graph.consistency import estimate_sampling_cost, format_sampling_estimate
+    _base_cost = {
+        "claude": 0.35, "claude-opus": 1.50, "deepseek": 0.03, "deepseek-pro": 0.35,
+        "openai": 0.40, "openai-cheap": 0.10, "openrouter": 0.05,
+        "openrouter-free": 0.00, "glm": 0.00,
+    }.get(PROVIDER, 0.35)
+    print(format_sampling_estimate(estimate_sampling_cost(len(TICKERS), _N_SAMPLES, _base_cost)))
+
 # Research Manager + Portfolio Manager → Claude Sonnet (deep tier only).
 # Quick-tier agents (analysts, researchers, trader, risk) stay on PROVIDER above.
 # Rollback: uncomment the 2 lines below.

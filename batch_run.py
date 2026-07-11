@@ -86,6 +86,13 @@ def main() -> None:
     print(f"\n{'='*65}")
     print(f"  BATCH RUN — {n} tickers — {trade_date} — provider: {provider} — samples: {n_samples}")
     print(f"  Mode: {config.get('pipeline_mode', 'rating')}  |  Est. time: ~{n * 6 * n_samples} min")
+    if n_samples > 1:
+        from tradingagents.graph.consistency import estimate_sampling_cost, format_sampling_estimate
+        base_cost = {
+            "claude": 0.35, "claude-opus": 1.50, "deepseek": 0.03, "deepseek-pro": 0.35,
+            "openai": 0.40, "openai-cheap": 0.10, "openrouter": 0.05,
+        }.get(provider, 0.05)
+        print(f"  {format_sampling_estimate(estimate_sampling_cost(n, n_samples, base_cost))}")
     print(f"{'='*65}\n")
 
     for i, ticker in enumerate(tickers, 1):

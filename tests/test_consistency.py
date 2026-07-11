@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 from tradingagents.graph.consistency import (
     vote_rating, aggregate_samples, ev_range_straddles, downgrade_conviction,
     resample_decisions, parse_ev_pct, parse_conviction_label,
+    estimate_sampling_cost, format_sampling_estimate,
 )
 
 
@@ -146,6 +147,33 @@ class BacktestDbRecordsTests(unittest.TestCase):
         self.assertEqual(finals[0][1], 3)             # n_samples
         self.assertEqual(finals[0][2], "2/3")         # consensus
         self.assertEqual(sorted(s[0] for s in samples), [1, 2, 3])
+
+
+class EstimateSamplingCostTests(unittest.TestCase):
+    def test_total_decision_runs_equals_tickers_times_samples(self):
+        est = estimate_sampling_cost(38, 3, 0.35)
+        self.assertEqual(est["total_decision_runs"], 114)
+
+    def test_single_sample_no_resample_markup(self):
+        est = estimate_sampling_cost(10, 1, 0.35)
+        self.assertEqual(est["total_decision_runs"], 10)
+        self.assertAlmostEqual(est["est_cost_usd"], 3.5)
+
+    def test_cost_uses_measured_resample_fraction(self):
+        # _RESAMPLE_COST_FRACTION = 0.65 — đo thực tế VCB (64.4%/62.8%, xem
+        # scratchpad/measure_resample_cost.py), không phải suy đoán 0.4 cũ.
+        # 1 mã, 3 samples, base $1.00: 1.00 + 2×0.65×1.00 = 2.30
+        est = estimate_sampling_cost(1, 3, 1.00)
+        self.assertAlmostEqual(est["est_cost_per_ticker_usd"], 2.30)
+        self.assertAlmostEqual(est["est_cost_usd"], 2.30)
+
+    def test_format_includes_run_count_and_cost(self):
+        est = estimate_sampling_cost(38, 3, 0.35)
+        line = format_sampling_estimate(est)
+        self.assertIn("38 mã", line)
+        self.assertIn("3 samples", line)
+        self.assertIn("114", line)
+        self.assertIn("$30.59", line)
 
 
 if __name__ == "__main__":

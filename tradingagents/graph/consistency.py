@@ -15,6 +15,8 @@ checkpoint. Module này chứa các HÀM THUẦN (pure) để tổng hợp N sam
   - parse_ev_pct        : trích EV(%) từ text PM (best-effort).
   - parse_conviction_label / parse_rating : trích nhãn từ text.
   - build_consistency_table_md : bảng markdown chèn vào section PM.
+  - estimate_sampling_cost      : ước tính SỐ RUN + CHI PHÍ trước khi chạy
+                                  (main.py/batch_run.py in ra khi --samples > 1).
 """
 
 from __future__ import annotations
@@ -253,3 +255,52 @@ def build_consistency_table_md(samples: list, agg: dict) -> str:
         "---",
     ]
     return "\n".join(lines)
+
+
+# ── Ước tính chi phí/số run trước khi chạy (main.py/batch_run.py) ───────────
+
+# Phần chi phí của 1 lần resample (chỉ RM→RO→PM) so với 1 full run — ĐO THỰC TẾ
+# (không phải suy đoán): chạy VCB thật, đo token qua StatsCallbackHandler ngay
+# trước/sau mỗi resample (script scratchpad/measure_resample_cost.py). Kết quả
+# 2 lần đo: 64.4% và 62.8% → trung bình 63.6%, làm tròn lên 0.65 (thận trọng
+# một chút cho cảnh báo trước-khi-chạy). Ban đầu đoán 0.4 (giả định theo tỷ lệ
+# 3/9 node) — SAI khá xa: mỗi resample vẫn phải gửi lại TOÀN BỘ context
+# (financials/risk metrics/investment plan) làm input token cho PM — PM là
+# deep-tier (đắt ~12x/token so với quick-tier), input token của PM gần như
+# không giảm giữa full run và resample dù bỏ qua 4 analyst + debate. Chi phí
+# resample tỷ lệ theo "tỷ trọng input token PM phải nhận lại", không theo tỷ
+# lệ số node/tổng node như suy đoán ban đầu.
+_RESAMPLE_COST_FRACTION = 0.65
+
+
+def estimate_sampling_cost(n_tickers: int, n_samples: int, base_cost_usd: float) -> dict:
+    """Ước tính THÔ số lần chạy quyết định (RM→RO→PM) và chi phí khi bật
+    self-consistency. Không phải số chính xác — chi phí thật vẫn lấy từ token
+    counter sau mỗi ticker; hàm này chỉ để cảnh báo TRƯỚC khi chạy cả rổ.
+
+    Mỗi ticker: 1 full run (giá base_cost_usd, đã gồm Phase I+debate+sample #1)
+    + (n_samples−1) lần resample, mỗi lần ước lượng ~_RESAMPLE_COST_FRACTION
+    chi phí 1 full run (đo thực tế ~63.6%, KHÔNG rẻ như suy đoán ban đầu —
+    xem comment ở _RESAMPLE_COST_FRACTION).
+    """
+    n_samples = max(1, int(n_samples))
+    n_tickers = max(0, int(n_tickers))
+    per_ticker_cost = base_cost_usd + (n_samples - 1) * base_cost_usd * _RESAMPLE_COST_FRACTION
+    return {
+        "n_tickers": n_tickers,
+        "n_samples": n_samples,
+        "total_decision_runs": n_tickers * n_samples,
+        "est_cost_usd": round(n_tickers * per_ticker_cost, 2),
+        "est_cost_per_ticker_usd": round(per_ticker_cost, 2),
+    }
+
+
+def format_sampling_estimate(est: dict) -> str:
+    """Dòng in ra console trước khi chạy — chỉ gọi khi n_samples > 1."""
+    return (
+        f"⚠ Self-consistency: {est['n_tickers']} mã × {est['n_samples']} samples "
+        f"= {est['total_decision_runs']} lần chạy quyết định (RM→RO→PM) "
+        f"· ước tính chi phí ~${est['est_cost_usd']:.2f} tổng "
+        f"(~${est['est_cost_per_ticker_usd']:.2f}/mã). "
+        "Số thật in ra sau mỗi mã."
+    )
