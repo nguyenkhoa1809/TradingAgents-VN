@@ -241,6 +241,7 @@ marketwire/data/*.db-*
 marketwire/data/*.db-shm
 marketwire/data/*.db-wal
 marketwire/data/*.log
+marketwire/data/*.csv
 reports/
 *.html
 # ...except real source files the broad rules above would otherwise swallow:
