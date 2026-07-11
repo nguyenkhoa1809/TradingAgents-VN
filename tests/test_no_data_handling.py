@@ -27,6 +27,12 @@ class TestLoadOhlcvNoPoison(unittest.TestCase):
         set_config({"data_cache_dir": self._tmp})
 
     def tearDown(self):
+        # TODO: os.remove() chỉ xóa file — nếu code khác (vd valuation_engine's
+        # _cache_dir()) tạo SUBDIRECTORY trong self._tmp trong lúc data_cache_dir
+        # đang bị set_config() trỏ vào đây, os.remove() ném PermissionError và
+        # tearDown bỏ dở, không reset lại global config → ô nhiễm chéo các test
+        # chạy sau trong cùng session pytest. Dùng shutil.rmtree(self._tmp,
+        # ignore_errors=True) thay cho vòng lặp + rmdir này. Không chặn merge.
         for f in os.listdir(self._tmp):
             os.remove(os.path.join(self._tmp, f))
         os.rmdir(self._tmp)

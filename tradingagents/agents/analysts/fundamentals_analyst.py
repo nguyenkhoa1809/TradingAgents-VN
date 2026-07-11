@@ -244,8 +244,10 @@ def create_fundamentals_analyst(llm):
                 "- 2 xúc tác tích cực + 2 rủi ro chính\n\n"
 
                 "## 📊 Kết Quả Tài Chính 5 Năm\n"
-                "- Tham chiếu bảng dữ liệu pre-loaded ở trên\n"
-                "- Nhận xét xu hướng doanh thu, biên lợi nhuận, tăng trưởng EPS\n"
+                "- **DÙNG NGUYÊN bảng 'Xu hướng hiệu quả 5 năm' và bảng renderer đã "
+                "dựng sẵn ở trên — KHÔNG tự dựng lại bảng, KHÔNG để trống ô đã có số "
+                "(vd LNST). Chỉ viết NHẬN XÉT xu hướng.**\n"
+                "- Nhận xét xu hướng doanh thu, biên lợi nhuận, tăng trưởng EPS/LNST\n"
                 "- Đánh giá chất lượng lợi nhuận (earnings quality checklist 7 điểm)\n"
                 "- **Phân tích chất lượng lợi nhuận**: Nếu có kỳ {outlier_period} là cực trị "
                   "(cao nhất/thấp nhất trong chuỗi), BẮT BUỘC: (a) tách lợi nhuận lõi "
@@ -300,8 +302,10 @@ def create_fundamentals_analyst(llm):
                   "{swing_variable} đảo chiều? Ngưỡng nào thì đảo luận điểm (breakeven)?\n\n"
 
                 "## ⚙️ Phân Tích DuPont\n"
-                "- ROE = Net Margin × Asset Turnover × Financial Leverage\n"
-                "- Giải thích điều gì đang thúc đẩy / kéo giảm ROE qua các năm\n\n"
+                "- **DÙNG NGUYÊN bảng 'Phân rã DuPont' đã tính sẵn ở trên (Python "
+                "tính) — KHÔNG tự tính lại các cấu phần.** Chỉ giải thích cấu phần "
+                "nào đang thúc đẩy / kéo giảm ROE qua các năm (bank: NII/dự phòng/"
+                "leverage; non-bank: margin/vòng quay/đòn bẩy).\n\n"
 
                 "## 🏭 Vị Thế Ngành & Yếu Tố Ngành Đặc Thù\n"
                 "- Áp dụng sector-specific metrics từ context (NIM cho ngân hàng, "

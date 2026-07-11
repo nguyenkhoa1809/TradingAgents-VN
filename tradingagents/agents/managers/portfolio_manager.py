@@ -33,17 +33,28 @@ def create_portfolio_manager(llm):
     def portfolio_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
 
-        history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
-        research_plan = state["investment_plan"]
-        trader_plan = state["trader_investment_plan"]
+        history = risk_debate_state.get("history", "")
+        research_plan = state.get("investment_plan", "")
+        trader_plan = state.get("trader_investment_plan", "")
 
-        if not trader_plan or not trader_plan.strip():
-            logger.warning(
-                "Portfolio Manager: trader_investment_plan is empty — "
-                "decision will be based on incomplete upstream input (Trader phase missing)."
-            )
-            trader_plan = "[MISSING — Trader phase produced no output]"
+        # Nguồn overlay rủi ro tùy mode: "rating" → Risk Officer review;
+        # "full" → risk debate history (như cũ). PM prompt dùng chung cả hai.
+        risk_review = state.get("risk_review", "")
+        if risk_review and risk_review.strip():
+            risk_overlay_label = ("Risk Officer review (rủi ro NGOÀI bộ kịch bản, "
+                                  "ràng buộc thực thi, điều kiện falsify)")
+            risk_overlay = risk_review
+        else:
+            risk_overlay_label = "Risk Analysts Debate History"
+            risk_overlay = history
+
+        # Trader chỉ có ở mode "full"; mode "rating" bỏ qua dòng này.
+        trader_line = (
+            f"- Trader's transaction proposal: **{trader_plan}**\n"
+            if trader_plan and trader_plan.strip()
+            else ""
+        )
 
         ev_band_text = get_config().get("ev_rating_band_text", "")
 
@@ -54,7 +65,7 @@ def create_portfolio_manager(llm):
             else ""
         )
 
-        prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+        prompt = f"""As the Portfolio Manager, synthesize the analysis and deliver the final trading decision.
 
 {instrument_context}
 
@@ -71,63 +82,56 @@ def create_portfolio_manager(llm):
 ```
 {ev_band_text}
 ```
-EV thô rơi vào band nào → rating đề xuất theo band đó. Mọi rating LỆCH khỏi band
-phải giải trình rõ (rủi ro đuôi / thanh khoản / mandate) — nếu không, rating sai.
 
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
-- Trader's transaction proposal: **{trader_plan}**
-{lessons_line}
-**Risk Analysts Debate History:**
-{history}
+{trader_line}{lessons_line}
+**{risk_overlay_label}:**
+{risk_overlay}
 {financials_section(state)}
 ---
 
-**PHƯƠNG PHÁP RA QUYẾT ĐỊNH (bắt buộc):**
-1. KHÔNG quyết theo kiểu "bên nào thắng tranh luận". Hãy lấy các kịch bản + xác suất
-   đã sinh ở phase trước, tính Expected Value = Σ(xác suất × payoff) và ghi rõ phép tính.
-2. Rating suy ra TỪ EV + mức tin cậy. Nếu rating ngược dấu EV, phải giải thích lý do
-   cụ thể (rủi ro đuôi, thanh khoản, chất lượng dữ liệu) — nếu không thì rating sai.
-3. Bắc cầu định giá ↔ khuyến nghị: nếu định giá cho upside/downside X%, nêu rõ
-   "Định giá cho upside X%, nhưng tôi khuyến nghị Y vì...". Không để hai phần mâu thuẫn.
-4. Mỗi phần chỉ thêm thông tin MỚI; không lặp lại nguyên văn các luận điểm đã nêu trước.
-5. Nếu bộ xác suất kịch bản bạn dùng KHÁC với bộ ở phase trước (vd phân tích kỹ thuật
-   dùng 60/25/15 còn bạn dùng 40/40/20), phải có MỘT câu giải thích vì sao khác
-   (khác khung thời gian, khác trọng số rủi ro...) — không để hai bộ mâu thuẫn trống.
-6. ĐỊNH GIÁ 2 LỚP: Kiểm tra xem Lớp 1 (số hiện tại, không giả định phục hồi) cho
-   upside bao nhiêu. Nếu upside hiện tại ≈ 0% (< ±5%) và phần lớn upside nằm ở kịch bản
-   phục hồi — bắt buộc thừa nhận điều đó ngay đầu quyết định: "Đây là kèo optionality,
-   không phải cổ phiếu rẻ hôm nay." Hạ sizing đợt 1 tương ứng xác suất kịch bản phục hồi xảy ra;
-   KHÔNG đặt Buy/Overweight với sizing đầy nếu số liệu hiện tại không có margin of safety.
-7. TẠI SAO LÀ LÚC NÀY: Nếu rating là Buy hoặc Overweight, bắt buộc nêu RÕ trong quyết định:
-   (a) Xúc tác cụ thể gần kỳ (sự kiện/công bố/thời điểm 1–2 quý tới), HOẶC
-   (b) Thừa nhận tường minh: "Vị thế kiên nhẫn/optionality — sizing nhỏ, chờ [điều kiện]."
-   KHÔNG được phát hành Buy/Overweight mà không có một trong hai. Nếu thiếu xúc tác rõ
-   ràng → hạ xuống Hold hoặc Overweight với sizing nhỏ kèm điều kiện kích hoạt.
-8. ĐÁNH GIÁ RỦI RO THEO TÁC ĐỘNG: Trước khi confirm rating, rà soát lại rủi ro ĐÃ XÁC NHẬN
-   và CHƯA GIẢI QUYẾT từ debate. Với mỗi rủi ro loại này: ước tính impact (% fair value
-   downside) × xác suất = EV risk. Nếu tổng EV risk > 15% fair value downside, rating
-   tối đa là Hold dù số lượng luận điểm Bull nhiều hơn. Ghi rõ phép tính này trong
-   quyết định.
-9. SENSITIVITY (bắt buộc — ghi vào ev_sensitivity + conviction): Sau khi chốt EV, tính
-   EV_low (chuyển +5pp từ Base sang Bear, Bull giữ nguyên) và EV_high (chuyển +5pp từ
-   Base sang Bull, Bear giữ nguyên). Gắn nhãn Conviction: THẤP nếu dải [EV_low, EV_high]
-   chứa EV=0% hoặc nếu EV_low/EV_high sẽ đổi rating; CAO nếu EV_low cách ranh giới gần
-   nhất ≥3 điểm %; TRUNG BÌNH nếu còn lại.
-10. BAND EV → RATING (điền ev_rating_band): Ánh xạ EV thô vào BẢNG BAND CỐ ĐỊNH ở trên,
-    nêu band tương ứng và rating đề xuất. Nếu rating cuối lệch band → giải trình rõ.
-11. PAYOFF + HORIZON + HỘI TỤ (điền payoff_horizon): Mỗi kịch bản payoff BẮT BUỘC ghi
-    khung thời gian (vd "+18% trong 12 tháng"). Nếu upside phụ thuộc re-rating mà không
-    có xúc tác gần (nối mục why-now) → hạ payoff kỳ vọng và ghi rõ giả định hội tụ
-    [hoàn toàn/một phần] trong [horizon]. Chống value trap.
-12. EV ĐIỀU CHỈNH RỦI RO (điền ev_risk_adjusted): Hiển thị CẢ EV thô lẫn
-    EV_risk_adjusted = EV / (độ rộng dải payoff = payoff_Bull − payoff_Bear). Vị thế EV
-    cao nhưng dải payoff rất rộng phải đánh dấu rủi ro cao, không ngang vị thế EV thấp dải hẹp.
-13. ⛔ CẤM SELF-CITATION: Không được đề cập tên analyst, CTCK hay nguồn bên ngoài
-    (ví dụ: "Analyst X từ Vietcap") TRỪ KHI thông tin đó có nguyên văn trong context
-    đã cung cấp. Không được tạo citation để minh họa hay xác nhận EV/định giá.
+**5 NGUYÊN TẮC RA QUYẾT ĐỊNH (bắt buộc):**
 
-Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
+1. EXPECTED VALUE: Lấy đúng bảng kịch bản + xác suất từ phase trước, tính
+   EV = Σ(xác suất × payoff) và GHI RÕ phép tính. Nếu bạn đổi bộ xác suất so với
+   phase trước, giải thích MỘT câu vì sao (khác khung thời gian, khác trọng số rủi ro).
+
+2. BAND EV → RATING: Ánh xạ EV thô vào BẢNG BAND CỐ ĐỊNH ở trên (điền ev_rating_band).
+   Rating suy ra TỪ band. Nếu rating cuối LỆCH khỏi band → giải trình cụ thể
+   (rủi ro đuôi/thanh khoản/mandate) — không giải trình thì rating sai.
+
+3. WHY NOW (bắt buộc cho Buy/Overweight): nêu RÕ một trong hai — (a) catalyst cụ thể
+   1–2 quý tới, HOẶC (b) thừa nhận tường minh đây là vị thế optionality, sizing nhỏ,
+   kèm điều kiện kích hoạt. Upside phụ thuộc RE-RATING mà KHÔNG có catalyst → hạ payoff
+   kỳ vọng (điền payoff_horizon với horizon + giả định hội tụ), chống value trap.
+
+4. SENSITIVITY & CONVICTION (điền ev_sensitivity + conviction): tính EV_low (+5pp
+   Base→Bear) và EV_high (+5pp Base→Bull). Conviction: THẤP nếu dải [EV_low, EV_high]
+   chứa EV=0% hoặc sẽ đổi rating; CAO nếu EV_low cách ranh giới gần nhất ≥3pp;
+   TRUNG BÌNH còn lại.
+
+5. RỦI RO OVERLAY: CHỈ các rủi ro NGOÀI bộ kịch bản (lấy từ '{risk_overlay_label}' ở
+   trên) mới được dùng để hạ rating XUỐNG DƯỚI mức band EV chỉ định. Rủi ro đã nằm
+   trong xác suất kịch bản Bear thì KHÔNG tính lần thứ hai. Ghi rõ rủi ro nào (nếu có)
+   đã kéo rating xuống.
+
+**TP vs EV (bắt buộc — hai con số KHÁC NHAU, không thay thế nhau):**
+- Block định giá deterministic ở trên luôn có dòng "TP (composite fair value)" — điểm
+  khi hội tụ, hoặc range gắn nhãn ĐỘ TIN CẬY THẤP. TP là FAIR VALUE định giá (so được
+  với target price sellside); EV là EXPECTED RETURN có trọng số xác suất kịch bản.
+  Executive summary PHẢI nêu CẢ HAI (TP và EV).
+- Nếu dấu của (TP − giá hiện tại) NGƯỢC dấu EV → bắt buộc một câu giải thích (thường do
+  phân bố kịch bản Bull/Bear lệch so với fair value tĩnh).
+- Nếu TP là range ĐỘ TIN CẬY THẤP (định giá tĩnh chưa hội tụ) → KHÔNG dùng TP làm căn cứ
+  chính; dựa vào EV và ghi rõ "định giá tĩnh chưa hội tụ, dùng range tham khảo".
+- (điền ev_risk_adjusted): hiển thị CẢ EV thô lẫn EV_risk_adjusted = EV / (payoff_Bull −
+  payoff_Bear). EV cao nhưng dải payoff rất rộng → đánh dấu rủi ro cao.
+
+⛔ CẤM SELF-CITATION: không nêu tên analyst/CTCK/nguồn ngoài trừ khi có nguyên văn trong
+context. Mỗi phần chỉ thêm thông tin MỚI, không lặp nguyên văn phase trước.
+
+Be decisive and ground every conclusion in specific evidence.{get_language_instruction()}"""
 
         final_trade_decision, pm_obj = invoke_structured_or_freetext(
             structured_llm,
@@ -141,7 +145,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         try:
             from tradingagents.agents.utils.citation_validator import validate_citations
             ticker = state.get("company_of_interest", "")
-            context_for_pm = "\n".join(filter(None, [history, research_plan, trader_plan]))
+            context_for_pm = "\n".join(filter(None, [history, risk_review, research_plan, trader_plan]))
             final_trade_decision, _flagged = validate_citations(
                 final_trade_decision, context_for_pm, "Portfolio Manager", ticker
             )

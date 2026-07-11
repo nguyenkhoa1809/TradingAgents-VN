@@ -100,11 +100,24 @@ class ResearchPlan(BaseModel):
             "including position sizing guidance consistent with the rating."
         ),
     )
+    scenarios: str = Field(
+        default="",
+        description=(
+            "BỘ KỊCH BẢN chốt lại (Portfolio Manager sẽ tính EV từ đây). BẮT BUỘC 3 "
+            "kịch bản Bull / Base / Bear, mỗi kịch bản: fair value (nghìn đồng) + "
+            "payoff (%) so giá hiện tại + xác suất (%). RÀNG BUỘC: tổng xác suất "
+            "3 kịch bản = 100% (ghi rõ phép cộng). Rủi ro đã nhận diện phải phản ánh "
+            "QUA xác suất kịch bản Bear — KHÔNG đặt ngưỡng cap rating riêng. Kèm 2–3 "
+            "điều kiện FALSIFY thesis (số liệu/mức giá quan sát được). Format: 'Bull: "
+            "FV X (+a%), p=..%; Base: FV Y (b%), p=..%; Bear: FV Z (−c%), p=..%; "
+            "tổng p = 100%. Falsify: ...'."
+        ),
+    )
 
 
 def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
-    return "\n".join([
+    parts = [
         f"**Recommendation**: {plan.recommendation.value}",
         "",
         f"**Đánh Giá Bằng Chứng (confirmed vs forecast)**: {plan.evidence_assessment}",
@@ -112,7 +125,10 @@ def render_research_plan(plan: ResearchPlan) -> str:
         f"**Rationale**: {plan.rationale}",
         "",
         f"**Strategic Actions**: {plan.strategic_actions}",
-    ])
+    ]
+    if plan.scenarios:
+        parts += ["", f"**Bộ Kịch Bản (Bull/Base/Bear, tổng xác suất = 100%)**: {plan.scenarios}"]
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +191,64 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
     ])
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Risk Officer (pipeline_mode="rating")
+# ---------------------------------------------------------------------------
+
+
+class RiskReview(BaseModel):
+    """Structured risk checklist produced by the Risk Officer.
+
+    Thay cho vòng tranh luận 3 risk debator ở mode "rating". KHÔNG tranh luận —
+    đây là bản review có cấu trúc: rủi ro ngoài kịch bản, ràng buộc thực thi
+    (đọc từ risk_metrics_block deterministic), và điều kiện falsify thesis.
+    Dùng bởi Portfolio Manager làm overlay rủi ro (chỉ rủi ro NGOÀI bộ kịch bản
+    mới được hạ rating dưới band EV).
+    """
+
+    risks_outside_scenarios: str = Field(
+        description=(
+            "Tối đa 3 rủi ro mà bảng kịch bản Bull/Base/Bear của Research Manager "
+            "CHƯA bao phủ (quản trị/governance, sự kiện pháp lý, cổ đông lớn/pha "
+            "loãng, tail risk hệ thống). Với MỖI rủi ro: (a) mô tả ngắn; (b) impact "
+            "ước tính (% fair value hoặc định tính nếu không lượng hoá được); "
+            "(c) CÓ làm đổi rating không. Nếu KHÔNG có rủi ro nào ngoài kịch bản → "
+            "ghi rõ đúng một câu 'Không có rủi ro trọng yếu ngoài bộ kịch bản đã "
+            "lập.' — KHÔNG bịa thêm để lấp chỗ."
+        ),
+    )
+    execution_constraints: str = Field(
+        description=(
+            "Ràng buộc thực thi — CHỈ diễn giải số CÓ SẴN trong block risk metrics "
+            "deterministic (thanh khoản/days-to-liquidate, room ngoại/foreign room, "
+            "free-float). KHÔNG tự tính lại, KHÔNG ước lượng số không có. Nếu block "
+            "không có chỉ số nào → ghi 'Không có dữ liệu ràng buộc thực thi.'"
+        ),
+    )
+    falsification_conditions: str = Field(
+        description=(
+            "2–3 điều kiện QUAN SÁT ĐƯỢC (số liệu quý cụ thể, mức giá, sự kiện) mà "
+            "nếu xảy ra thì thesis của Research Manager SAI. Mỗi điều kiện phải cụ "
+            "thể và kiểm chứng được (vd 'NIM quý tới < 3.0%', 'giá thủng 25.0'), "
+            "không chung chung ('nếu kinh tế xấu đi')."
+        ),
+    )
+
+
+def render_risk_review(review: RiskReview) -> str:
+    """Render a RiskReview to markdown for state['risk_review'] and the PM prompt."""
+    return "\n".join([
+        "**Rủi ro NGOÀI bộ kịch bản Bull/Base/Bear**:",
+        review.risks_outside_scenarios,
+        "",
+        "**Ràng buộc thực thi (từ risk metrics deterministic)**:",
+        review.execution_constraints,
+        "",
+        "**Điều kiện falsify thesis**:",
+        review.falsification_conditions,
+    ])
 
 
 # ---------------------------------------------------------------------------

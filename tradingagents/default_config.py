@@ -27,6 +27,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MEMORY_LOG_HOSTNAME":  "memory_log_hostname",
     "TRADINGAGENTS_MARKETWIRE_DB":        "marketwire_db_path",
     "TRADINGAGENTS_MARKETWIRE_SOURCES":   "marketwire_sources_path",
+    "TRADINGAGENTS_PIPELINE_MODE":        "pipeline_mode",
+    "TRADINGAGENTS_CONSISTENCY_SAMPLES":  "consistency_samples",
 }
 
 
@@ -63,6 +65,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # tiếp danh sách feed RSS tiếng Việt từ đây, KHÔNG dùng danh sách riêng
     # (_VN_NEWS_SITES cũ) — đảm bảo 2 pipeline đọc cùng 1 nguồn, không lệch.
     "marketwire_sources_path": os.getenv("TRADINGAGENTS_MARKETWIRE_SOURCES", os.path.join(_REPO_ROOT, "marketwire", "sources.yaml")),
+    # Dữ liệu bank bổ sung ngoài vnstock (CAR...) — cập nhật thủ công theo quý.
+    "bank_metrics_path": os.getenv("TRADINGAGENTS_BANK_METRICS", os.path.join(_REPO_ROOT, "bank_metrics.yaml")),
     # Multi-machine mode: when set (e.g. a shared OneDrive folder), each
     # machine writes ONLY to its own trading_memory_<hostname>.md inside this
     # directory (single-writer-per-file — safe under cloud file sync), while
@@ -77,6 +81,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
+    # Pipeline mode (chọn cách wire graph — KHÔNG xóa node nào):
+    #   "full"   : đồ thị đầy đủ (Trader + risk debate 3 debator) — tương thích ngược.
+    #   "rating" : Analysts → Bull/Bear → Research Manager → Risk Officer (1 node
+    #              checklist) → Portfolio Manager. Không Trader, không risk debate.
+    "pipeline_mode": "rating",
+    # Self-consistency sampling (CHỈ mode rating): chạy Phase I + debate 1 lần,
+    # sample N lần chuỗi Research Manager → Risk Officer → Portfolio Manager rồi
+    # vote. 1 = tắt (single-pass như cũ). >1 = bật. env TRADINGAGENTS_CONSISTENCY_SAMPLES.
+    "consistency_samples": 3,
     # LLM settings
     "llm_provider": "openai",
     # When set, deep-think agents (Research Manager, Portfolio Manager) use this
@@ -170,6 +183,30 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "max_peers":     25,     # trần số mã peer fetch (bound API + wall-clock)
         "peer_sleep":    0.3,    # nghỉ giữa call peer (golden tier 500/min)
         "dcf_horizon":   10,     # số năm high-growth cho reverse-DCF
+        # Historical P/B percentile band (5 năm) — sanity-check định giá + fair value band.
+        "pb_band_quarters":     20,  # số quý lịch sử dùng cho band (20 = 5 năm)
+        "pb_band_min_quarters":  8,  # tối thiểu số quý để band có ý nghĩa (dưới → bỏ band)
+        # Sanity check corridor 2 chiều: một phương pháp CHỈ bị loại khi implied P/B
+        # nằm ngoài CẢ band lịch sử [P10,P90] LẪN hành lang quanh P/B hiện tại
+        # [corridor_low × P/B_now, corridor_high × P/B_now]. Mã đang re-rate/de-rate
+        # mạnh (P/B hiện tại ở đuôi phân phối lịch sử) vẫn giữ được phương pháp hợp lệ.
+        "corridor_low":   0.6,   # sàn hành lang = 0.6 × P/B hiện tại
+        "corridor_high":  1.5,   # trần hành lang = 1.5 × P/B hiện tại
+        # Cross-method rescue: ≥2 phương pháp (trừ band mid) bị loại nhưng fair value
+        # đồng thuận trong vòng (max/min ≤ rescue_tolerance) → khôi phục cả nhóm
+        # (regime shift so với band lịch sử, không phải lỗi từng phương pháp).
+        "rescue_tolerance": 1.3,
+        # Trọng số composite fair value theo route ngành ICB. Phương pháp bị loại
+        # (error / reliable=False / không nằm trong route) → renormalize phần còn lại.
+        # BANK: sector chỉ hiển thị tham khảo (không vào composite).
+        # REAL_ESTATE: justified P/B & DDM không phù hợp (cần RNAV) → chỉ band + sector.
+        # DEFAULT không trả cổ tức → bỏ DDM, chia lại sector/band 55/45.
+        "composite_weights": {
+            "BANK":        {"justified_pb": 0.45, "ddm": 0.25, "pb_band": 0.30},
+            "REAL_ESTATE": {"pb_band": 0.60, "sector": 0.40},
+            "DEFAULT":     {"sector": 0.40, "pb_band": 0.35, "ddm": 0.25},
+            "DEFAULT_NODIV": {"sector": 0.55, "pb_band": 0.45},
+        },
     },
     # Risk metrics deterministic (Task 10 / vn_risk_metrics.py).
     # Tính beta/VaR/drawdown/ADTV/days-to-liquidate từ price history.

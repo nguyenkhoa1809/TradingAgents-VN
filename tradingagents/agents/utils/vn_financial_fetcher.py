@@ -43,6 +43,71 @@ def _is_bank(ratio_df: pd.DataFrame) -> bool:
     return False
 
 
+def _is_securities(ia: pd.DataFrame, iq: pd.DataFrame) -> bool:
+    """CTCK có template BCTC riêng (TT210) với dòng doanh thu môi giới/margin/FVTPL
+    KHÔNG xuất hiện ở ngành khác — cột 'Revenue in Brokerage services' là chữ ký
+    đặc trưng, đáng tin hơn dò tên ICB (không cần fetch industry map thêm)."""
+    for df in (ia, iq):
+        if df is not None and not df.empty and "Revenue in Brokerage services" in df.columns:
+            return True
+    return False
+
+
+def sector_class(is_bank: bool, ia: pd.DataFrame, iq: pd.DataFrame) -> str:
+    """Nguồn phân loại ngành DÙNG CHUNG cho bảng năm/quý (fetcher) + renderer.
+
+    "BANK" | "SECURITIES" | "GENERIC". is_bank tái dùng kết quả _is_bank() đã có
+    (tránh tính 2 lần khác nhau ở 2 chỗ) — chỉ thêm lớp SECURITIES lên trên.
+    """
+    if is_bank:
+        return "BANK"
+    if _is_securities(ia, iq):
+        return "SECURITIES"
+    return "GENERIC"
+
+
+def _income_field_vnd(row, sec_class: str):
+    """Giá trị 'thu nhập' theo ngành (VND thô, chưa quy tỷ).
+
+    BANK: TOI ('Total Operating Income' — field tổng có sẵn, không cần cộng
+    cấu phần). SECURITIES: 'Net sales' ('OPERATING SALES') — đã kiểm chứng thực
+    tế (SSI/VCI/VND, 10 quý liên tiếp) là tổng doanh thu HĐ (môi giới + cho vay
+    margin + FVTPL/HTM/AFS + tư vấn/bảo lãnh) do vnstock tính sẵn — dùng trực
+    tiếp, không tự cộng lại các dòng con (nhiều field cũ '(Before 2016)' không
+    ổn định qua thời gian). GENERIC: 'Net sales'/'Revenue' như cũ.
+    """
+    if sec_class == "BANK":
+        return _get(row, "Total Operating Income")
+    return _get(row, "Net sales", "Revenue")
+
+
+def _efficiency_pct(row, income_vnd, lnst_vnd, sec_class: str):
+    """Chỉ số hiệu quả theo ngành, tính sẵn (renderer chỉ format, không tính lại).
+
+    BANK: CIR = |Chi phí hoạt động| / TOI × 100 — THẤP = tốt (ngược chiều biên
+    LN thông thường). SECURITIES/GENERIC: biên LN ròng = LNST / thu nhập × 100
+    — CAO = tốt. Thiếu input → None (renderer hiển thị '—', không phải 0).
+
+    Vì sao SECURITIES dùng biên LN thay vì CIR (dù cùng là ngành tài chính với
+    BANK): CIR có ý nghĩa khi MẪU SỐ (thu nhập hoạt động) tương đối ỔN ĐỊNH qua
+    các kỳ, để chi phí/thu nhập phản ánh đúng hiệu quả VẬN HÀNH — đúng với bank
+    (thu nhập lãi thuần ổn định, ít biến động thị trường). CTCK thì thu nhập
+    hoạt động (môi giới, tự doanh FVTPL, lãi margin) DAO ĐỘNG MẠNH theo diễn
+    biến thị trường mỗi quý — CIR sẽ nhảy loạn không do vận hành tốt/xấu mà do
+    thị trường lên/xuống, gây hiểu sai. Biên LN ròng (LNST/thu nhập) là chỉ số
+    chuẩn ngành CTCK, phản ánh đúng bản chất kinh doanh biến động theo thị
+    trường thay vì giả định nền chi phí cố định như bank.
+    """
+    if sec_class == "BANK":
+        opex = _get(row, "General and Admin Expenses")
+        if opex is None or not income_vnd:
+            return None
+        return abs(float(opex)) / float(income_vnd) * 100
+    if income_vnd and lnst_vnd is not None:
+        return float(lnst_vnd) / float(income_vnd) * 100
+    return None
+
+
 def _pct(v) -> str:
     try:
         return f"{float(v) * 100:.1f}%"
@@ -73,6 +138,14 @@ def _bn(v) -> str:
         return f"{float(v) / 1e9:,.0f}"
     except (TypeError, ValueError):
         return "—"
+
+
+def _f_num(v):
+    """float hoặc None (dùng để phân biệt 0.0 thật vs thiếu)."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _get(row, *keys):
@@ -151,6 +224,7 @@ def fetch_vn_financial_context(
         ca = _filter(cf_raw,    "annual",  n_years)     # annual cash flow
 
         is_bank = _is_bank(rq) if not rq.empty else False
+        sec_class = sector_class(is_bank, ia, iq)
 
         # ── build markdown ──────────────────────────────────────────────────
         md = []
@@ -221,16 +295,23 @@ def fetch_vn_financial_context(
                 ("Net Interest Margin",          "NIM",          "%"),
                 ("NPL (%)",                      "NPL",          "%"),
                 ("CASA Ratio",                   "CASA",         "%"),
-                ("CAR",                          "CAR",          "%"),
+                # CAR CỐ TÌNH bỏ khỏi đây: vnstock trả 0.0 (thiếu thật) → nguồn CAR
+                # lấy từ bank_metrics.yaml, inject riêng ở build_financials_payload.
                 ("LDR (%)",                      "LDR",          "%"),
                 ("Net Debt (Bn)",                "Net Debt",     "tỷ"),
                 ("Free Cash Flow (Bn)",          "FCF",          "tỷ"),
                 ("FCF Yield (%)",                "FCF Yield",    "%"),
             ]
+            # Với các bank-ratio này, vnstock zero-fill khi thiếu → 0.0 nghĩa là
+            # KHÔNG CÓ DỮ LIỆU, không phải giá trị thật (0% NIM/NPL/CASA/LDR bất khả).
+            # Bỏ qua để không truyền 0.0 vô nghĩa xuống agent.
+            _ZERO_MISSING = {"Net Interest Margin", "NPL (%)", "CASA Ratio", "LDR (%)"}
             row_items = []
             for key, label, fmt in VALUATION_KEYS:
                 v = _get(first, key)
                 if v is None:
+                    continue
+                if key in _ZERO_MISSING and _f_num(v) == 0.0:
                     continue
                 if fmt == "%":
                     row_items.append(f"**{label}**: {_pct(v)}")
@@ -260,28 +341,9 @@ def fetch_vn_financial_context(
                 md.append(f"| {period} | {rev} | {lnst} | {eps} |")
             md.append("")
 
-        # --- DuPont decomposition (annual) ---
-        if not ra.empty:
-            md.append("### DuPont: ROE decomposition")
-            md.append("| Năm | ROE | Net Margin | Asset Turnover | Financial Leverage |")
-            md.append("|-----|-----|------------|----------------|-------------------|")
-            for _, r in ra.iterrows():
-                period = str(r.get("report_period", ""))
-                roe    = _pct(_get(r, "ROE (%)", "ROE(%)"))
-                # Net Margin = LNST / DT (khớp với bảng trên — A2)
-                ir2 = None
-                if not ia.empty and "report_period" in ia.columns:
-                    m2 = ia[ia["report_period"].astype(str) == period]
-                    if not m2.empty:
-                        ir2 = m2.iloc[0]
-                rev2  = _get(ir2, "Net sales", "Revenue") if ir2 is not None else None
-                lnst2 = _get(ir2, "Attributable to parent company", "Net profit") if ir2 is not None else None
-                margin = (f"{float(lnst2) / float(rev2) * 100:.1f}%"
-                          if (rev2 and lnst2 and float(rev2) != 0) else "—")
-                at     = _num(_get(r, "Asset Turnover"), 2)
-                lev    = _num(_get(r, "Financial Leverage", "Debt/Equity"), 2)
-                md.append(f"| {period} | {roe} | {margin} | {at} | {lev} |")
-            md.append("")
+        # DuPont annual decomposition đã CHUYỂN sang fundamentals_tables.py
+        # (deterministic, có bank ROA×leverage) — inject ở build_financials_payload,
+        # tránh bảng DuPont trùng lặp (một ở đây, một ở module mới).
 
         # --- Free Cash Flow (annual) — ĐỊNH NGHĨA DUY NHẤT: FCF = CFO − CapEx (A3) ---
         # Bank không dùng FCF kiểu này → bỏ qua.
@@ -309,10 +371,12 @@ def fetch_vn_financial_context(
         chart_data: dict = {
             "symbol":        symbol,
             "is_bank":       is_bank,
+            "sector_class":  sec_class,
             "latest_price":  latest_price,
             "years":         [],
-            "revenue_bn":    [],
+            "revenue_bn":    [],   # thu nhập theo ngành: TOI (bank) / DT HĐ (securities) / doanh thu (generic)
             "netprofit_bn":  [],
+            "efficiency_pct": [],  # CIR (bank, thấp=tốt) hoặc biên LN ròng (securities/generic, cao=tốt)
             "pe":            [],
             "pb":            [],
             "roe_pct":       [],
@@ -321,7 +385,9 @@ def fetch_vn_financial_context(
             "npl_pct":       [],
             "quarters":      [],
             "q_revenue_bn":  [],
+            "q_income_bn":   [],   # = q_revenue_bn, tên theo spec (giữ cả 2 key cho tương thích)
             "q_profit_bn":   [],
+            "q_efficiency_pct": [],
         }
 
         if not ra.empty and "report_period" in ra.columns:
@@ -338,10 +404,14 @@ def fetch_vn_financial_context(
                     v = _get(row, *keys)
                     return float(v) if v is not None else None
 
-                rev = fv(i, "Net sales", "Revenue")
+                rev_raw = _income_field_vnd(i, sec_class)
+                rev = float(rev_raw) if rev_raw is not None else None
                 chart_data["revenue_bn"].append(rev / 1e9 if rev else None)
-                np_ = fv(i, "Attributable to parent company", "Net profit")
+                np_raw = _get(i, "Attributable to parent company", "Net profit")
+                np_ = float(np_raw) if np_raw is not None else None
                 chart_data["netprofit_bn"].append(np_ / 1e9 if np_ else None)
+                eff = _efficiency_pct(i, rev_raw, np_raw, sec_class)
+                chart_data["efficiency_pct"].append(eff)
                 chart_data["pe"].append(fv(r, "P/E"))
                 chart_data["pb"].append(fv(r, "P/B"))
                 roe = fv(r, "ROE (%)", "ROE(%)")
@@ -357,10 +427,13 @@ def fetch_vn_financial_context(
             iq_sorted = iq.iloc[::-1].reset_index(drop=True)
             chart_data["quarters"] = list(iq_sorted["report_period"].astype(str))
             for _, r in iq_sorted.iterrows():
-                rev = _get(r, "Net sales", "Revenue")
-                np_ = _get(r, "Attributable to parent company", "Net profit")
-                chart_data["q_revenue_bn"].append(float(rev) / 1e9 if rev else None)
-                chart_data["q_profit_bn"].append(float(np_) / 1e9 if np_ else None)
+                rev_raw = _income_field_vnd(r, sec_class)
+                np_raw = _get(r, "Attributable to parent company", "Net profit")
+                rev_bn = float(rev_raw) / 1e9 if rev_raw is not None else None
+                chart_data["q_revenue_bn"].append(rev_bn)
+                chart_data["q_income_bn"].append(rev_bn)
+                chart_data["q_profit_bn"].append(float(np_raw) / 1e9 if np_raw is not None else None)
+                chart_data["q_efficiency_pct"].append(_efficiency_pct(r, rev_raw, np_raw, sec_class))
 
         return {
             "summary_md": summary_md,
@@ -390,6 +463,46 @@ FCF) đã được tính sẵn bằng máy — chỉ diễn giải, không tính
 """
 
 
+def _load_bank_metrics(symbol: str) -> dict:
+    """Đọc bank_metrics.yaml → dict cho ticker (car/as_of/source). {} nếu thiếu.
+
+    car được coi là CÓ chỉ khi là số > 0; null / 0 / rỗng → thiếu (không truyền 0.0).
+    """
+    try:
+        from tradingagents.dataflows.config import get_config
+        import yaml
+        path = get_config().get("bank_metrics_path")
+        if not path or not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        entry = data.get(symbol.upper()) or {}
+        car = _f_num(entry.get("car"))
+        return {
+            "car": car if (car is not None and car > 0) else None,
+            "as_of": entry.get("as_of") or None,
+            "source": entry.get("source") or None,
+        }
+    except Exception:
+        return {}
+
+
+def _bank_extra_block(symbol: str) -> str:
+    """Markdown block chỉ số vốn bank từ nguồn ngoài vnstock (CAR)."""
+    m = _load_bank_metrics(symbol)
+    car = m.get("car")
+    if car is not None:
+        asof = f" (tại {m['as_of']})" if m.get("as_of") else ""
+        src = f" — nguồn: {m['source']}" if m.get("source") else ""
+        car_str = f"**{car:.1f}%**{asof}{src}"
+    else:
+        car_str = "— (chưa cập nhật trong bank_metrics.yaml; KHÔNG suy luận trên 0%)"
+    return (
+        "\n### Chỉ số vốn (nguồn ngoài vnstock — cập nhật thủ công)\n"
+        f"- **CAR (Capital Adequacy Ratio)**: {car_str}\n"
+    )
+
+
 def build_financials_payload(symbol: str, source: str = "VCI", trade_date: str | None = None,
                              beta: float | None = None) -> dict:
     """Canonical financial payload — MỘT nguồn số duy nhất cho mọi agent (A1).
@@ -417,6 +530,21 @@ def build_financials_payload(symbol: str, source: str = "VCI", trade_date: str |
         data = json.loads(ctx["chart_json"]) if ctx.get("chart_json") else {}
     except (json.JSONDecodeError, ValueError):
         data = {}
+
+    # Bảng trend + DuPont deterministic (Python tính, analyst chỉ nhận xét).
+    # Best-effort: lỗi ở đây không phá payload.
+    try:
+        from tradingagents.agents.utils.fundamentals_tables import build_fundamentals_tables
+        _ft = build_fundamentals_tables(ctx.get("frames", {}), ctx.get("is_bank", False))
+        if _ft:
+            block += "\n" + _ft
+    except Exception:
+        pass
+
+    # CAR & metric bank bổ sung ngoài vnstock (bank_metrics.yaml). CHỈ cho bank.
+    # Thiếu số → "—", TUYỆT ĐỐI không 0.0.
+    if ctx.get("is_bank"):
+        block += "\n" + _bank_extra_block(symbol)
 
     # ── Task 8: định giá deterministic — tiêm thẳng vào block (single source) ──
     # valuation_engine tính từ số, agent chỉ diễn giải. Best-effort: lỗi ở đây

@@ -71,6 +71,8 @@ class AgentState(MessagesState):
     risk_debate_state: Annotated[
         RiskDebateState, "Current state of the debate on evaluating risk"
     ]
+    # Risk Officer checklist review (pipeline_mode="rating" — thay 3 risk debator)
+    risk_review: Annotated[str, "Structured risk checklist review from the Risk Officer"]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]
 

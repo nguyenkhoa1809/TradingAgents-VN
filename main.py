@@ -178,10 +178,13 @@ _parser.add_argument("--ticker", required=True,
                       help="Mã CK, phân tách bởi dấu phẩy nếu nhiều mã — vd: PNJ hoặc PNJ,VCB,TCB")
 _parser.add_argument("--date", default=None,
                       help="Ngày phân tích YYYY-MM-DD (mặc định: hôm nay)")
+_parser.add_argument("--samples", type=int, default=None,
+                      help="Self-consistency samples (mode rating). Mặc định theo config.")
 _args, _ = _parser.parse_known_args()
 
 TICKERS    = [t.strip().upper() for t in _args.ticker.split(",") if t.strip()]
 TRADE_DATE = _args.date or date.today().strftime("%Y-%m-%d")
+CONSISTENCY_SAMPLES = _args.samples
 
 # OUTPUT LANGUAGE — ngôn ngữ của TẤT CẢ báo cáo (tranh luận nội bộ vẫn English)
 # "Vietnamese" → mọi analyst viết tiếng Việt từ gốc. "English" → mặc định.
@@ -194,7 +197,7 @@ VN_PROSE_REFINE = True
 VN_PROSE_REFINE_SECTIONS = [
     "market_report", "sentiment_report", "news_report",
     "fundamentals_report", "investment_plan", "trader_investment_plan",
-    "final_trade_decision",
+    "risk_review", "final_trade_decision",
 ]
 
 
@@ -275,12 +278,22 @@ ANALYSTS = ["market", "fundamentals", "news", "social"]  # "social" = sentiment 
 SECTION_KEYS = [
     "market_report", "sentiment_report", "news_report",
     "fundamentals_report", "investment_plan", "trader_investment_plan",
-    "final_trade_decision",
+    "risk_review", "final_trade_decision",
 ]
 
 config = DEFAULT_CONFIG.copy()
 config.update(_PROVIDER_PRESETS[PROVIDER])
 config["output_language"] = OUTPUT_LANGUAGE
+
+# Pipeline mode: "rating" (Risk Officer, mặc định) | "full" (Trader + risk debate).
+# Đổi qua config["pipeline_mode"] hoặc env TRADINGAGENTS_PIPELINE_MODE.
+PIPELINE_MODE = config.get("pipeline_mode", "rating")
+# Self-consistency samples: CLI --samples override config.
+if CONSISTENCY_SAMPLES is not None:
+    config["consistency_samples"] = CONSISTENCY_SAMPLES
+_N_SAMPLES = int(config.get("consistency_samples", 1) or 1)
+print(f"Pipeline mode: {PIPELINE_MODE}  |  provider: {PROVIDER}  |  "
+      f"samples: {_N_SAMPLES}  |  tickers: {', '.join(TICKERS)}")
 
 # Research Manager + Portfolio Manager → Claude Sonnet (deep tier only).
 # Quick-tier agents (analysts, researchers, trader, risk) stay on PROVIDER above.

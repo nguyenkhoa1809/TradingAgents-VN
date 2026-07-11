@@ -138,6 +138,14 @@ SECTION_META = {
         "badge": "Trading",
         "phase": "III",
     },
+    "risk_review": {
+        "title": "Risk Officer Review",
+        "icon": "🛡️",
+        "color": "#ef4444",
+        "gradient": "linear-gradient(135deg, #450a0a 0%, #dc2626 100%)",
+        "badge": "Risk",
+        "phase": "IV",
+    },
     "final_trade_decision": {
         "title": "Portfolio Manager Decision",
         "icon": "🎯",
@@ -437,13 +445,17 @@ def validate_report(sections: dict[str, str], financials: dict | None = None) ->
                     f"[{key}] Multiple direction sai: '{snippet}' "
                     f"({n1}x không {direction} {n2}x)"
                 )
-    # G3: Trader input must be present and non-stub when PM runs
-    _trader_text = sections.get("trader_investment_plan", "").strip()
-    if not _trader_text or "[MISSING" in _trader_text:
-        warnings.append(
-            "[trader_investment_plan] MISSING — Trader phase produced no output; "
-            "PM decision is based on incomplete upstream input"
-        )
+    # G3: Trader input must be present and non-stub when PM runs — CHỈ áp dụng cho
+    # pipeline_mode="full". Ở mode "rating" không có Trader (Risk Officer thay thế),
+    # nên sự hiện diện của section risk_review = trader vắng mặt là HỢP LỆ, không cảnh báo.
+    _rating_mode = bool(sections.get("risk_review", "").strip())
+    if not _rating_mode:
+        _trader_text = sections.get("trader_investment_plan", "").strip()
+        if not _trader_text or "[MISSING" in _trader_text:
+            warnings.append(
+                "[trader_investment_plan] MISSING — Trader phase produced no output; "
+                "PM decision is based on incomplete upstream input"
+            )
 
     # E2: PM **Rating** field must match what detect_signal extracts for the banner
     pm_text = sections.get("final_trade_decision", "")
@@ -1386,6 +1398,11 @@ body::before {
   margin-bottom: 10px;
   letter-spacing: 0.02em;
 }
+.fin-note {
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+  margin-top: 8px;
+}
 table.fin-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
 table.fin-tbl th {
   background: rgba(59,130,246,0.12);
@@ -1996,9 +2013,12 @@ def _build_financial_block(chart_data: dict) -> str:
         return ""
 
     is_bank = chart_data.get("is_bank", False)
+    # sector_class: fallback cho chart_json cũ (đã cache trước khi thêm key này).
+    sclass  = chart_data.get("sector_class") or ("BANK" if is_bank else "GENERIC")
     years   = chart_data.get("years", []) or []
     rev     = chart_data.get("revenue_bn", []) or []
     npf     = chart_data.get("netprofit_bn", []) or []
+    eff     = chart_data.get("efficiency_pct", []) or []
     pe      = chart_data.get("pe", []) or []
     pb      = chart_data.get("pb", []) or []
     roe     = chart_data.get("roe_pct", []) or []
@@ -2008,6 +2028,7 @@ def _build_financial_block(chart_data: dict) -> str:
     quarters = chart_data.get("quarters", []) or []
     q_rev    = chart_data.get("q_revenue_bn", []) or []
     q_pf     = chart_data.get("q_profit_bn", []) or []
+    q_eff    = chart_data.get("q_efficiency_pct", []) or []
 
     if not years and not quarters:
         return ""
@@ -2015,23 +2036,25 @@ def _build_financial_block(chart_data: dict) -> str:
     def g(lst, i):
         return lst[i] if i < len(lst) and lst[i] is not None else None
 
-    # Net margin (computed) — annual & quarterly
-    def margin(rv, pf):
-        out = []
-        for a, b in zip(rv, pf):
-            out.append(round(b / a * 100, 1) if (a and b is not None and a != 0) else None)
-        return out
-    a_margin = margin(rev, npf)
-    q_margin = margin(q_rev, q_pf)
+    # Nhãn cột thu nhập/hiệu quả theo ngành (Task: BANK→TOI/CIR, SECURITIES→DT
+    # hoạt động/Biên LN, GENERIC→Doanh thu/Biên LN). Giá trị cột hiệu quả lấy
+    # TRỰC TIẾP từ chart_data (efficiency_pct/q_efficiency_pct) đã tính sẵn ở
+    # fetcher — renderer chỉ format, không tính lại (CIR cần opex, renderer
+    # không có field đó).
+    rev_lbl, eff_lbl = {
+        "BANK":       ("TOI", "CIR"),
+        "SECURITIES": ("DT hoạt động", "Biên LN"),
+    }.get(sclass, ("Doanh thu", "Biên LN"))
 
     # ── Tables ──────────────────────────────────────────────────────────
-    rev_lbl = "Tổng TN" if is_bank else "Doanh thu"
     yr_rows = ""
     for i, y in enumerate(years):
-        if is_bank:
+        if sclass == "BANK":
             yr_rows += (
                 f"<tr><td>{y}</td>"
+                f"<td>{_fnum(g(rev,i),0)}</td>"
                 f"<td>{_fnum(g(npf,i),0)}</td>"
+                f"<td>{_fnum(g(eff,i))}</td>"
                 f"<td>{_fnum(g(roe,i))}</td>"
                 f"<td>{_fnum(g(roa,i),2)}</td>"
                 f"<td>{_fnum(g(nim,i),2)}</td>"
@@ -2044,16 +2067,17 @@ def _build_financial_block(chart_data: dict) -> str:
                 f"<tr><td>{y}</td>"
                 f"<td>{_fnum(g(rev,i),0)}</td>"
                 f"<td>{_fnum(g(npf,i),0)}</td>"
-                f"<td>{_fnum(g(a_margin,i))}</td>"
+                f"<td>{_fnum(g(eff,i))}</td>"
                 f"<td>{_fnum(g(roe,i))}</td>"
                 f"<td>{_fnum(g(roa,i),2)}</td>"
                 f"<td>{_fnum(g(pe,i),1)}</td>"
                 f"<td>{_fnum(g(pb,i),2)}</td></tr>"
             )
-    if is_bank:
-        yr_head = "<tr><th>Năm</th><th>LNST</th><th>ROE</th><th>ROA</th><th>NIM</th><th>NPL</th><th>P/E</th><th>P/B</th></tr>"
+    if sclass == "BANK":
+        yr_head = (f"<tr><th>Năm</th><th>{rev_lbl}</th><th>LNST</th><th>{eff_lbl}</th>"
+                  "<th>ROE</th><th>ROA</th><th>NIM</th><th>NPL</th><th>P/E</th><th>P/B</th></tr>")
     else:
-        yr_head = f"<tr><th>Năm</th><th>{rev_lbl}</th><th>LNST</th><th>Biên LN</th><th>ROE</th><th>ROA</th><th>P/E</th><th>P/B</th></tr>"
+        yr_head = f"<tr><th>Năm</th><th>{rev_lbl}</th><th>LNST</th><th>{eff_lbl}</th><th>ROE</th><th>ROA</th><th>P/E</th><th>P/B</th></tr>"
 
     q_rows = ""
     for i, q in enumerate(quarters):
@@ -2061,9 +2085,13 @@ def _build_financial_block(chart_data: dict) -> str:
             f"<tr><td>{q}</td>"
             f"<td>{_fnum(g(q_rev,i),0)}</td>"
             f"<td>{_fnum(g(q_pf,i),0)}</td>"
-            f"<td>{_fnum(g(q_margin,i))}</td></tr>"
+            f"<td>{_fnum(g(q_eff,i))}</td></tr>"
         )
-    q_head = f"<tr><th>Quý</th><th>{rev_lbl}</th><th>LNST</th><th>Biên LN</th></tr>"
+    q_head = f"<tr><th>Quý</th><th>{rev_lbl}</th><th>LNST</th><th>{eff_lbl}</th></tr>"
+    cir_note = (
+        '<p class="fin-note">⚠ CIR = chi phí hoạt động / TOI — <b>THẤP là tốt</b> '
+        '(ngược chiều Biên LN thông thường).</p>' if sclass == "BANK" else ""
+    )
 
     tables_html = ""
     if yr_rows:
@@ -2076,7 +2104,8 @@ def _build_financial_block(chart_data: dict) -> str:
         tables_html += (
             f'<div class="fin-table-wrap"><h4>Kết quả theo quý · {len(quarters)} quý '
             '<span style="font-weight:400;color:var(--text-muted)">(tỷ đồng · %)</span></h4>'
-            f'<table class="fin-tbl"><thead>{q_head}</thead><tbody>{q_rows}</tbody></table></div>'
+            f'<table class="fin-tbl"><thead>{q_head}</thead><tbody>{q_rows}</tbody></table>'
+            f'{cir_note}</div>'
         )
 
     # ── Charts (bar + line combo, BSR-like colors) ──────────────────────
@@ -2089,7 +2118,7 @@ def _build_financial_block(chart_data: dict) -> str:
                 {"name": rev_lbl, "data": rev, "color": "#3b82f6"},
                 {"name": "LNST",  "data": npf, "color": "#22c55e"},
             ],
-            "lines": [{"name": "Biên LN", "data": a_margin, "color": "#f59e0b", "axis": "right"}],
+            "lines": [{"name": eff_lbl, "data": eff, "color": "#f59e0b", "axis": "right"}],
         })
     if is_bank and years and any(v is not None for v in nim):
         specs.append({
@@ -2126,7 +2155,7 @@ def _build_financial_block(chart_data: dict) -> str:
                 {"name": rev_lbl, "data": q_rev, "color": "#3b82f6"},
                 {"name": "LNST",  "data": q_pf,  "color": "#22c55e"},
             ],
-            "lines": [{"name": "Biên LN", "data": q_margin, "color": "#f59e0b", "axis": "right"}],
+            "lines": [{"name": eff_lbl, "data": q_eff, "color": "#f59e0b", "axis": "right"}],
         })
 
     charts_html = ""
@@ -2480,21 +2509,10 @@ def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | No
     trader_r = ar.get("trader") or _extract("trader_investment_plan")
     pm_r     = ar.get("pm")     or _extract("final_trade_decision")
 
-    # PM override đa số: normalize to direction, check if PM disagrees with ≥3 of the 5 others
-    others = [market_r, news_r, funds_r, rm_r, trader_r]
-    pm_dir = _rating_direction(pm_r)
-    override_badge = ""
-    if pm_dir is not None:
-        disagree = sum(
-            1 for r in others
-            if _rating_direction(r) is not None and _rating_direction(r) != pm_dir
-        )
-        if disagree >= 3:
-            override_badge = (
-                f'<span class="art-override-badge">⚠ PM override đa số ({disagree}/5)</span>'
-            )
-
-    rows = [
+    # Chỉ render dòng cho agent CÓ MẶT trong run: section tồn tại & non-empty
+    # (Trader vắng ở pipeline_mode="rating" → không có dòng "chưa có dữ liệu").
+    # PM luôn hiển thị (là final signal của mọi run).
+    _all_rows = [
         ("📈", "Market Analyst",        market_r,  False, "market_report",          ar.get("market_reason")),
         ("📰", "News Analyst",          news_r,    False, "news_report",            ar.get("news_reason")),
         ("🏦", "Fundamentals Analyst",  funds_r,   False, "fundamentals_report",    ar.get("fundamentals_reason")),
@@ -2502,6 +2520,25 @@ def _build_agent_rating_table(sections: dict[str, str], agent_ratings: dict | No
         ("⚡", "Trader",               trader_r,  False, "trader_investment_plan", ar.get("trader_reason")),
         ("🎯", "Portfolio Manager",     pm_r,      True,  "final_trade_decision",   ar.get("pm_reason")),
     ]
+    rows = [
+        r for r in _all_rows
+        if r[3] or bool(sections.get(r[4], "").strip())  # is_pm hoặc section có mặt
+    ]
+
+    # PM override đa số: mẫu số Y = số agent (không tính PM) THỰC TẾ có khuyến nghị
+    # trong run này (không hardcode 5). Badge khi PM ngược hướng với đa số của Y.
+    others = [
+        rating for (_i, _n, rating, is_pm, _k, _r) in rows
+        if not is_pm and _rating_direction(rating) is not None
+    ]
+    pm_dir = _rating_direction(pm_r)
+    override_badge = ""
+    if pm_dir is not None and others:
+        disagree = sum(1 for r in others if _rating_direction(r) != pm_dir)
+        if disagree * 2 > len(others):  # đa số thực sự
+            override_badge = (
+                f'<span class="art-override-badge">⚠ PM override đa số ({disagree}/{len(others)})</span>'
+            )
 
     tbody = ""
     for icon, name, rating, is_pm, sec_key, reason_override in rows:

@@ -155,6 +155,7 @@ class TradingAgentsGraph:
             self.conditional_logic,
             analyst_concurrency_limit=self.config.get("analyst_concurrency_limit", 1),
             analyst_thinking_llm=self.analyst_thinking_llm,
+            pipeline_mode=self.config.get("pipeline_mode", "rating"),
         )
 
         self.propagator = Propagator(
@@ -172,6 +173,17 @@ class TradingAgentsGraph:
         self.workflow = self.graph_setup.setup_graph(selected_analysts)
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
+
+        # Self-consistency: node quyết định (RM→RO→PM) gọi trực tiếp để resample
+        # từ checkpoint post-debate (chỉ mode rating). Dùng CHÍNH các LLM đã gắn
+        # callback → token cộng dồn qua các sample tự động.
+        self._decision_nodes = None
+        if self.config.get("pipeline_mode") == "rating":
+            self._decision_nodes = {
+                "rm": create_research_manager(self.quick_thinking_llm),
+                "ro": create_risk_officer(self.quick_thinking_llm),
+                "pm": create_portfolio_manager(self.deep_thinking_llm),
+            }
 
     def _get_provider_kwargs(self, provider: str = None) -> Dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation.
@@ -539,6 +551,14 @@ class TradingAgentsGraph:
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
 
+        # Self-consistency (mode rating, samples>1): full graph run ở trên LÀ sample
+        # #1 (đã chạy Phase I + debate + RM→RO→PM một lần). Resample thêm N−1 lần
+        # chuỗi RM→RO→PM TỪ chính state đó (Phase I/debate KHÔNG chạy lại) rồi vote.
+        n_samples = int(self.config.get("consistency_samples", 1) or 1)
+        if (self.config.get("pipeline_mode") == "rating"
+                and n_samples > 1 and self._decision_nodes):
+            final_state = self._run_consistency_samples(final_state, n_samples)
+
         # Store current state for reflection.
         self.curr_state = final_state
 
@@ -563,6 +583,43 @@ class TradingAgentsGraph:
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
+    def _run_consistency_samples(self, base_state: dict, n: int) -> dict:
+        """Resample chuỗi quyết định N lần từ checkpoint post-debate; vote tổng hợp.
+
+        base_state = kết quả full run (sample #1). Sample #2..N gọi trực tiếp
+        RM→RO→PM trên bản copy nông của base_state — Phase I & debate KHÔNG chạy
+        lại (chỉ đọc analyst reports + debate history + block deterministic có sẵn).
+        """
+        from tradingagents.graph.consistency import (
+            resample_decisions, aggregate_samples, build_consistency_table_md,
+            apply_final_to_pm_text,
+        )
+
+        samples = resample_decisions(
+            base_state, n,
+            self._decision_nodes["rm"], self._decision_nodes["ro"], self._decision_nodes["pm"],
+            on_error=lambda idx, e: logger.warning("Consistency sample %d failed: %s", idx, e),
+        )
+        agg = aggregate_samples(samples)
+        median = samples[agg["median_index"]]
+
+        # Nội dung chính = sample median; Rating/Conviction ghi đè theo vote tổng hợp.
+        patched = apply_final_to_pm_text(
+            median["final_trade_decision"], agg["final_rating"], agg["final_conviction"]
+        )
+        final_text = patched + "\n" + build_consistency_table_md(samples, agg)
+
+        base_state["investment_plan"] = median["investment_plan"]
+        base_state["risk_review"] = median["risk_review"]
+        base_state["final_trade_decision"] = final_text
+        base_state["pm_rating"] = agg["final_rating"]
+        base_state["pm_reason"] = median.get("pm_reason")
+        base_state["consistency_samples"] = samples
+        base_state["consistency_summary"] = agg
+        logger.info("Self-consistency: %d samples → %s (consensus %s)",
+                    n, agg["final_rating"], agg["consensus"])
+        return base_state
+
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
         self.log_states_dict[str(trade_date)] = {
@@ -583,7 +640,9 @@ class TradingAgentsGraph:
                     "judge_decision"
                 ],
             },
-            "trader_investment_decision": final_state["trader_investment_plan"],
+            # Trader/risk-debate absent ở pipeline_mode="rating" → dùng .get() để
+            # không KeyError; risk_review là output tương ứng của mode rating.
+            "trader_investment_decision": final_state.get("trader_investment_plan", ""),
             "risk_debate_state": {
                 "aggressive_history": final_state["risk_debate_state"]["aggressive_history"],
                 "conservative_history": final_state["risk_debate_state"]["conservative_history"],
@@ -591,6 +650,7 @@ class TradingAgentsGraph:
                 "history": final_state["risk_debate_state"]["history"],
                 "judge_decision": final_state["risk_debate_state"]["judge_decision"],
             },
+            "risk_review": final_state.get("risk_review", ""),
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
             "market_analyst_rating": final_state.get("market_analyst_rating"),

@@ -53,9 +53,21 @@ CREATE TABLE IF NOT EXISTS calibration_runs (
     direction_correct INTEGER,
     actual_return_pct REAL,
     resolved_at      TEXT,
-    pipeline_version TEXT
+    pipeline_version TEXT,
+    sample_id        INTEGER,
+    n_samples        INTEGER,
+    consensus        TEXT,
+    is_final         INTEGER
 )
 """
+
+# Cột self-consistency thêm sau — ALTER cho DB cũ (CREATE IF NOT EXISTS không thêm cột).
+_MIGRATE_COLS = [
+    ("sample_id", "INTEGER"),
+    ("n_samples", "INTEGER"),
+    ("consensus", "TEXT"),
+    ("is_final", "INTEGER"),
+]
 
 _TRANSITIONS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS signal_transitions (
@@ -115,21 +127,29 @@ def _init_db() -> sqlite3.Connection:
     con = sqlite3.connect(str(CALIBRATION_DB))
     con.execute(_SCHEMA_SQL)
     con.execute(_TRANSITIONS_SCHEMA_SQL)
+    # Migrate DB cũ: thêm cột self-consistency nếu thiếu.
+    existing = {r[1] for r in con.execute("PRAGMA table_info(calibration_runs)")}
+    for col, typ in _MIGRATE_COLS:
+        if col not in existing:
+            con.execute(f"ALTER TABLE calibration_runs ADD COLUMN {col} {typ}")
     con.commit()
     return con
 
 
-def _save_record(con: sqlite3.Connection, date: str, ticker: str, fields: dict, version: str) -> None:
+def _save_record(con: sqlite3.Connection, date: str, ticker: str, fields: dict, version: str,
+                 sample_id=None, n_samples=None, consensus=None, is_final=1) -> None:
     con.execute(
         """INSERT INTO calibration_runs
                (date, ticker, rating, ev_pct, conviction,
-                bull_prob, base_prob, bear_prob, entry_price, pipeline_version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                bull_prob, base_prob, bear_prob, entry_price, pipeline_version,
+                sample_id, n_samples, consensus, is_final)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             date, ticker,
             fields["rating"], fields["ev_pct"], fields["conviction"],
             fields["bull_prob"], fields["base_prob"], fields["bear_prob"],
             fields["entry_price"], version,
+            sample_id, n_samples, consensus, is_final,
         ),
     )
     con.commit()
@@ -462,7 +482,15 @@ def _expand_date_range(date_range: str) -> list:
 
 # ── Main backtest runner ──────────────────────────────────────────────────────
 
-def run_backtest(ticker: str, dates: list, provider: str) -> None:
+def _sample_fields(sample: dict, chart_json: str) -> dict:
+    """Fields cho 1 self-consistency sample — parse từ final_trade_decision của nó."""
+    return _extract_fields({
+        "final_trade_decision": sample.get("final_trade_decision", ""),
+        "financials_chart_json": chart_json,
+    })
+
+
+def run_backtest(ticker: str, dates: list, provider: str, samples: int | None = None) -> None:
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -471,13 +499,19 @@ def run_backtest(ticker: str, dates: list, provider: str) -> None:
 
     config = DEFAULT_CONFIG.copy()
     config.update(_PROVIDER_PRESETS[provider])
+    if samples is not None:
+        config["consistency_samples"] = int(samples)
 
     con      = _init_db()
     n_resolved = resolve_outcomes(con)
     if n_resolved:
         logging.info("Resolved %d pending outcome(s)", n_resolved)
 
-    version = _pipeline_version()
+    # Version tách thế hệ: mode + số sample self-consistency (vd "abc-rating-sc3").
+    pipeline_mode = config.get("pipeline_mode", "rating")
+    n_samples = int(config.get("consistency_samples", 1) or 1)
+    version = f"{_pipeline_version()}-{pipeline_mode}-sc{n_samples}"
+    logging.info("Pipeline mode: %s · consistency_samples: %d", pipeline_mode, n_samples)
 
     for date in dates:
         logging.info("Backtest %s @ %s", ticker, date)
@@ -485,13 +519,28 @@ def run_backtest(ticker: str, dates: list, provider: str) -> None:
         try:
             final_state, signal = ta.propagate(ticker, date, run_type="backtest")
             fields = _extract_fields(final_state)
-            _save_record(con, date, ticker, fields, version)
+            samples_list = final_state.get("consistency_samples") or []
+            agg = final_state.get("consistency_summary") or {}
+            consensus = agg.get("consensus")
+            chart_json = final_state.get("financials_chart_json", "")
+
+            # Mỗi sample một record (is_final=0), rồi record tổng hợp (is_final=1).
+            for sid, s in enumerate(samples_list, 1):
+                _save_record(con, date, ticker, _sample_fields(s, chart_json), version,
+                             sample_id=sid, n_samples=len(samples_list),
+                             consensus=consensus, is_final=0)
+            _save_record(con, date, ticker, fields, version,
+                         sample_id=None, n_samples=(len(samples_list) or 1),
+                         consensus=consensus, is_final=1)
+
+            # Transition detection dựa trên rating tổng hợp (record is_final).
             prev = _latest_cross_machine_rating(ticker, date)
             _apply_transition(con, ticker, date, prev, fields, version)
             logging.info(
-                "  saved — rating=%-12s  conviction=%-12s  ev_pct=%s",
+                "  saved — rating=%-12s  conviction=%-12s  ev_pct=%s  (%d samples, consensus %s)",
                 fields["rating"], fields["conviction"],
                 f"{fields['ev_pct']:.1f}%" if fields["ev_pct"] is not None else "—",
+                len(samples_list) or 1, consensus or "n/a",
             )
         except Exception as e:
             logging.error("FAILED %s @ %s: %s", ticker, date, e)
@@ -506,6 +555,8 @@ def main() -> None:
     parser.add_argument("--ticker",   required=True, help="VN ticker, e.g. VCB")
     parser.add_argument("--provider", default="deepseek-pro",
                         help=f"LLM provider preset ({', '.join(_PROVIDER_PRESETS)})")
+    parser.add_argument("--samples", type=int, default=None,
+                        help="Self-consistency samples (mode rating). Mặc định theo config.")
     grp = parser.add_mutually_exclusive_group(required=True)
     grp.add_argument("--date",       help="Single trade date YYYY-MM-DD")
     grp.add_argument("--date-range", help="Date range YYYY-MM-DD:YYYY-MM-DD")
@@ -514,7 +565,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 
     dates = [args.date] if args.date else _expand_date_range(args.date_range)
-    run_backtest(args.ticker, dates, args.provider)
+    run_backtest(args.ticker, dates, args.provider, samples=args.samples)
 
     print(f"\nCalibration DB: {CALIBRATION_DB}")
     print("Run `python calibration_report.py` to view accuracy.")

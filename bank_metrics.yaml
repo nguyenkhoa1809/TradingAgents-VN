@@ -1,0 +1,53 @@
+# bank_metrics.yaml — dữ liệu bank BỔ SUNG ngoài vnstock (vnstock trả 0.0/thiếu).
+# Cập nhật THỦ CÔNG theo quý. Mỗi ticker bank:
+#   car:    Capital Adequacy Ratio (%) — số thực, vd 11.5 (nghĩa là 11.5%). Để trống nếu chưa có.
+#   as_of:  ngày hiệu lực số CAR (YYYY-MM-DD).
+#   source: nguồn ngắn gọn (vd "BCTC Q2/2026", "NHNN", "bản tin IR").
+#
+# QUY TẮC: thiếu số → ĐỂ TRỐNG (null), TUYỆT ĐỐI không điền 0.0 (0.0 bị hiểu là
+# "không có dữ liệu" và hiển thị "—", không phải CAR = 0%).
+
+VCB:
+  car:
+  as_of:
+  source:
+
+CTG:
+  car:
+  as_of:
+  source:
+
+BID:
+  car:
+  as_of:
+  source:
+
+TCB:
+  car:
+  as_of:
+  source:
+
+MBB:
+  car:
+  as_of:
+  source:
+
+ACB:
+  car:
+  as_of:
+  source:
+
+VPB:
+  car:
+  as_of:
+  source:
+
+STB:
+  car:
+  as_of:
+  source:
+
+HDB:
+  car:
+  as_of:
+  source:

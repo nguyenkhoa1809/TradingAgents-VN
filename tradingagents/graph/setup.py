@@ -23,6 +23,7 @@ class GraphSetup:
         conditional_logic: ConditionalLogic,
         analyst_concurrency_limit: int = 1,
         analyst_thinking_llm: Any = None,
+        pipeline_mode: str = "rating",
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
@@ -33,6 +34,9 @@ class GraphSetup:
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
         self.analyst_concurrency_limit = analyst_concurrency_limit
+        # "full" = đồ thị đầy đủ (Trader + risk debate); "rating" = Risk Officer
+        # thay cho Trader + 3 risk debator. Không xóa node — chỉ đổi cách wire.
+        self.pipeline_mode = pipeline_mode
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -58,16 +62,12 @@ class GraphSetup:
             "fundamentals": lambda: create_fundamentals_analyst(self.analyst_thinking_llm),
         }
 
+        rating_mode = self.pipeline_mode == "rating"
+
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
         research_manager_node = create_research_manager(self.quick_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
-
-        # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
         portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
 
         # Create workflow
@@ -83,14 +83,22 @@ class GraphSetup:
         fact_check_gate_node = create_fact_check_gate(self.quick_thinking_llm)
         workflow.add_node("Fact Check Gate", fact_check_gate_node)
 
-        # Add other nodes
+        # Shared Phase-II nodes (both modes)
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
+
+        # Mode-specific Phase III/IV nodes.
+        if rating_mode:
+            # Rating: một Risk Officer (checklist) thay cho Trader + risk debate.
+            workflow.add_node("Risk Officer", create_risk_officer(self.quick_thinking_llm))
+        else:
+            # Full: Trader + 3 risk debator (đồ thị gốc, không đổi behavior).
+            workflow.add_node("Trader", create_trader(self.quick_thinking_llm))
+            workflow.add_node("Aggressive Analyst", create_aggressive_debator(self.quick_thinking_llm))
+            workflow.add_node("Neutral Analyst", create_neutral_debator(self.quick_thinking_llm))
+            workflow.add_node("Conservative Analyst", create_conservative_debator(self.quick_thinking_llm))
+
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
@@ -137,32 +145,39 @@ class GraphSetup:
                 "Research Manager": "Research Manager",
             },
         )
-        workflow.add_edge("Research Manager", "Trader")
-        workflow.add_edge("Trader", "Aggressive Analyst")
-        workflow.add_conditional_edges(
-            "Aggressive Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Conservative Analyst": "Conservative Analyst",
-                "Portfolio Manager": "Portfolio Manager",
-            },
-        )
-        workflow.add_conditional_edges(
-            "Conservative Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Neutral Analyst": "Neutral Analyst",
-                "Portfolio Manager": "Portfolio Manager",
-            },
-        )
-        workflow.add_conditional_edges(
-            "Neutral Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Aggressive Analyst": "Aggressive Analyst",
-                "Portfolio Manager": "Portfolio Manager",
-            },
-        )
+        if rating_mode:
+            # Research Manager → Risk Officer → Portfolio Manager (không Trader,
+            # không risk debate).
+            workflow.add_edge("Research Manager", "Risk Officer")
+            workflow.add_edge("Risk Officer", "Portfolio Manager")
+        else:
+            # Full: Trader → risk debate 3 debator → Portfolio Manager (như cũ).
+            workflow.add_edge("Research Manager", "Trader")
+            workflow.add_edge("Trader", "Aggressive Analyst")
+            workflow.add_conditional_edges(
+                "Aggressive Analyst",
+                self.conditional_logic.should_continue_risk_analysis,
+                {
+                    "Conservative Analyst": "Conservative Analyst",
+                    "Portfolio Manager": "Portfolio Manager",
+                },
+            )
+            workflow.add_conditional_edges(
+                "Conservative Analyst",
+                self.conditional_logic.should_continue_risk_analysis,
+                {
+                    "Neutral Analyst": "Neutral Analyst",
+                    "Portfolio Manager": "Portfolio Manager",
+                },
+            )
+            workflow.add_conditional_edges(
+                "Neutral Analyst",
+                self.conditional_logic.should_continue_risk_analysis,
+                {
+                    "Aggressive Analyst": "Aggressive Analyst",
+                    "Portfolio Manager": "Portfolio Manager",
+                },
+            )
 
         workflow.add_edge("Portfolio Manager", END)
 

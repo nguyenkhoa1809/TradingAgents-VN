@@ -37,7 +37,9 @@ def create_research_manager(llm):
 - **Underweight**: Cautious view; recommend trimming exposure
 - **Sell**: Strong conviction in the bear thesis; recommend exiting or avoiding the position
 
-Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold for situations where the evidence on both sides is genuinely balanced.
+Recommendation của bạn là HƯỚNG NGHIÊNG (lean) của Research Manager dựa trên chấm điểm
+bằng chứng — KHÔNG phải rating trần cho Portfolio Manager. PM sẽ tự tính EV từ bộ kịch
+bản bạn chốt và ra rating cuối. Reserve Hold cho khi bằng chứng hai bên thực sự cân bằng.
 
 **BURDEN OF PROOF ĐỐI XỨNG (bắt buộc):** Đánh giá cả hai phía theo CÙNG MỘT tiêu chuẩn
 bằng chứng. Trước khi kết luận, với MỖI bên nêu rõ data point nào ĐÃ XÁC NHẬN (số liệu
@@ -45,16 +47,17 @@ lịch sử/đã công bố) vs DỰ BÁO (kỳ vọng tương lai). KHÔNG đư
 minh được tương lai" trong khi bên kia cũng chỉ đang dự báo. Số liệu thực tế gần nhất
 (vd LNST quý mới nhất) là bằng chứng ĐÃ XÁC NHẬN — không được gạt đi.
 
-**IMPACT-WEIGHTED RISK ASSESSMENT (bắt buộc):** Khi đánh giá rủi ro từ Bear, KHÔNG
-đếm số lượng data point — hãy đánh giá theo TÁC ĐỘNG lên LNST/fair value:
-- Với mỗi rủi ro được Bear nêu: ước tính impact (% LNST giảm hoặc fair value giảm) và
-  xác suất xảy ra. Rủi ro có impact cao + xác suất trung bình > rủi ro có impact thấp +
-  xác suất cao.
-- Rủi ro ĐÃ XÁC NHẬN (đang xảy ra, số liệu thực) và CHƯA GIẢI QUYẾT phải được MAP rõ
-  vào kịch bản Bear với xác suất cụ thể và sizing hệ quả — KHÔNG được "acknowledge rồi
-  bỏ qua" chỉ vì bên Bull có nhiều luận điểm hơn.
-- Công thức: EV Bear = Σ(xác suất_i × impact_i). Nếu EV Bear > 15% fair value downside,
-  rating tối đa là Hold dù Bull thắng điểm số.
+**CHỐT BỘ KỊCH BẢN (bắt buộc — điền field scenarios):** Nhiệm vụ cốt lõi của bạn là
+chốt BỘ KỊCH BẢN Bull / Base / Bear để Portfolio Manager tính EV:
+- Mỗi kịch bản: fair value (nghìn đồng) + payoff (%) so giá hiện tại + xác suất (%).
+- RÀNG BUỘC BẮT BUỘC: tổng xác suất 3 kịch bản = 100% — ghi rõ phép cộng. Mọi phép tính
+  xác suất bạn viết ra phải cộng lại đúng 100%.
+- Rủi ro Bear đã nhận diện được thể hiện QUA xác suất (và fair value) của kịch bản Bear —
+  rủi ro impact cao/khả năng cao → tăng xác suất Bear và/hoặc hạ fair value Bear. TUYỆT
+  ĐỐI KHÔNG đặt ngưỡng riêng kiểu "EV rủi ro > X% thì cap rating tối đa Hold"; không áp
+  trần rating. Rủi ro đã đi vào xác suất Bear thì không phạt lần hai.
+- Kèm 2–3 điều kiện FALSIFY thesis: số liệu/mức giá quan sát được mà nếu xảy ra thì
+  luận điểm chính của bạn sai.
 
 **XÁC NHẬN DỮ LIỆU TREND (bắt buộc):** Trước khi chấp nhận luận điểm trend từ bất kỳ bên nào,
 kiểm tra: (a) Xu hướng có được dẫn chứng bằng tối thiểu 2–3 data point thực không?

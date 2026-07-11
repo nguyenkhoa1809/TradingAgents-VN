@@ -14,6 +14,25 @@ Các lớp định giá:
   V3  sector multiples THỰC (median P/E, P/B, EV/EBITDA cùng ngành ICB)
   V4  reverse-DCF (market-implied growth)
 
+Ba lớp bổ sung (Task nâng cấp — tin cậy hơn, bớt lạc quan hệ thống):
+  L1  P/B percentile band 5 năm     — phân phối P/B lịch sử của chính mã đó
+      (P10/P25/P50/P75/P90 + percentile hiện tại); fair value band = [P25,P75]×BVPS,
+      midpoint = P50×BVPS. Là "neo thực nghiệm" so được các phương pháp mô hình.
+  L2  Sanity check corridor 2 chiều  — quy mỗi phương pháp về implied P/B; CHỈ loại
+      khi ngoài CẢ band lịch sử [P10,P90] LẪN hành lang [corridor_low,high]×P/B_now
+      (mã re-rate/de-rate mạnh không bị loại oan). Cross-method rescue: phương pháp
+      bị loại được khôi phục khi fair value đồng thuận (±rescue_tolerance) với BẤT KỲ
+      anchor còn sống (bằng chứng mạnh), hoặc với nhóm ≥2 phương pháp cùng bị loại
+      (yếu hơn). ROE_fwd của justified P/B fade khi ROE giảm, floor tại COE.
+  L3  Route ngành ICB + composite   — BANK / REAL_ESTATE / DEFAULT chọn bộ phương
+      pháp & trọng số khác nhau (default_config["valuation"]["composite_weights"]);
+      phương pháp bị loại → renormalize. Band mid bị HẠ vai trò (loại khỏi composite,
+      chỉ tham khảo) khi P/B hiện tại là outlier (percentile ≤10 hoặc ≥90). Mô hình
+      2 TIER: khi composite-tier < 2 phương pháp, PROMOTE reference-tier (phương pháp
+      reliable nhưng không nằm trong trọng số route, vd sector với bank) chia đều phần
+      trọng số thiếu. Chỉ khi sau promote vẫn < 2 → composite điểm = None NHƯNG luôn
+      trả TP range [min,max] fair value (độ tin cậy thấp) — markdown luôn có 1 dòng TP.
+
 Đơn vị: mọi giá trị/CP quy về **nghìn đồng** (khớp latest_price và quy ước report).
 COE / risk-free / ERP để trong config (default_config.py["valuation"]) — cập nhật
 định kỳ; hằng số module-level dưới đây chỉ là fallback.
@@ -47,6 +66,17 @@ _FALLBACK = {
     "max_peers": 25,         # trần số mã peer fetch (bound API + wall-clock)
     "peer_sleep": 0.3,       # nghỉ giữa các call peer (golden tier 500/min)
     "dcf_horizon": 10,       # số năm high-growth cho reverse-DCF
+    "pb_band_quarters": 20,      # số quý lịch sử cho band P/B (5 năm)
+    "pb_band_min_quarters": 8,   # tối thiểu số quý để band có ý nghĩa
+    "corridor_low": 0.6,         # sàn hành lang quanh P/B hiện tại
+    "corridor_high": 1.5,        # trần hành lang quanh P/B hiện tại
+    "rescue_tolerance": 1.3,     # max/min fair value để rescue nhóm đồng thuận chéo
+    "composite_weights": {       # trọng số composite theo route ngành (xem default_config)
+        "BANK":          {"justified_pb": 0.45, "ddm": 0.25, "pb_band": 0.30},
+        "REAL_ESTATE":   {"pb_band": 0.60, "sector": 0.40},
+        "DEFAULT":       {"sector": 0.40, "pb_band": 0.35, "ddm": 0.25},
+        "DEFAULT_NODIV": {"sector": 0.55, "pb_band": 0.45},
+    },
 }
 
 
@@ -264,15 +294,334 @@ def sector_multiples(symbol: str, source: str, cfg: dict, as_of: str) -> dict:
     return out
 
 
+# ── L1: P/B percentile band lịch sử 5 năm ───────────────────────────────────
+
+def _pb_quarterly_series(symbol: str, source: str, rq: pd.DataFrame,
+                          cfg: dict, as_of: str) -> list:
+    """Chuỗi P/B theo quý (mới→cũ), tối đa cfg['pb_band_quarters'] quý.
+
+    Ưu tiên dùng frame rq đã fetch; nếu depth < 12 quý thì fetch thêm full ratio
+    history (cache theo ngày giống sector_multiples) để có đủ ~5 năm.
+    """
+    want = int(cfg["pb_band_quarters"])
+
+    def _extract(df: pd.DataFrame) -> list:
+        if df.empty or "P/B" not in df.columns:
+            return []
+        xs = [_f(x) for x in df["P/B"].tolist()]
+        return [x for x in xs if x is not None and x > 0]
+
+    pbs = _extract(rq)
+    if len(pbs) >= 12:
+        return pbs[:want]
+
+    ck = os.path.join(_cache_dir(), f"pbhist_{source}_{symbol.upper()}_{as_of}.json")
+    if os.path.exists(ck):
+        try:
+            with open(ck, "r", encoding="utf-8") as fh:
+                cached = json.load(fh)
+            if isinstance(cached, list) and len(cached) >= len(pbs):
+                return [float(x) for x in cached][:want]
+        except Exception:
+            pass
+
+    try:
+        from vnstock_data import Finance
+        raw = _safe(Finance(symbol=symbol, source=source).ratio)
+        rqf = _filter(raw, "quarter", want)
+        fresh = _extract(rqf)
+        if len(fresh) > len(pbs):
+            pbs = fresh
+            try:
+                with open(ck, "w", encoding="utf-8") as fh:
+                    json.dump(pbs, fh)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return pbs[:want]
+
+
+def pb_history_band(symbol: str, source: str, rq: pd.DataFrame, bvps_k,
+                    pb_now, cfg: dict, as_of: str) -> dict:
+    """Band P/B lịch sử 5 năm + fair value band từ BVPS hiện tại.
+
+    Trả: {pb_current, pb_p10, pb_p25, pb_p50, pb_p75, pb_p90, pb_percentile_now,
+          fv_band_low, fv_band_mid, fv_band_high, n_quarters}
+    hoặc {"error": ...} nếu số quý < cfg['pb_band_min_quarters'].
+    """
+    pbs = _pb_quarterly_series(symbol, source, rq, cfg, as_of)
+    n = len(pbs)
+    if n < int(cfg["pb_band_min_quarters"]):
+        return {"error": f"chỉ {n} quý P/B lịch sử (< {cfg['pb_band_min_quarters']}) — bỏ band",
+                "n_quarters": n}
+
+    s = pd.Series(pbs, dtype="float64")
+    q = s.quantile([0.10, 0.25, 0.50, 0.75, 0.90])
+    p10, p25, p50, p75, p90 = (float(q.loc[x]) for x in (0.10, 0.25, 0.50, 0.75, 0.90))
+
+    pb_cur = _f(pb_now)
+    pct_now = None
+    if pb_cur is not None:
+        pct_now = round(sum(1 for x in pbs if x <= pb_cur) / n * 100.0, 1)
+
+    bv = _f(bvps_k)
+    fv_low = p25 * bv if bv else None
+    fv_mid = p50 * bv if bv else None
+    fv_high = p75 * bv if bv else None
+
+    return {
+        "pb_current": pb_cur,
+        "pb_p10": round(p10, 3), "pb_p25": round(p25, 3), "pb_p50": round(p50, 3),
+        "pb_p75": round(p75, 3), "pb_p90": round(p90, 3),
+        "pb_percentile_now": pct_now,
+        "fv_band_low": fv_low, "fv_band_mid": fv_mid, "fv_band_high": fv_high,
+        "n_quarters": n,
+    }
+
+
+# ── L3: route ngành ICB ─────────────────────────────────────────────────────
+
+def _route_industry(symbol: str, source: str, is_bank: bool) -> dict:
+    """Xác định nhóm ngành để route phương pháp: BANK / REAL_ESTATE / DEFAULT.
+
+    is_bank (từ NIM detection) là tín hiệu ngân hàng tin cậy nhất → ưu tiên.
+    Còn lại tra icb_name trong industry map (substring, robust theo cấp ICB).
+    Trả: {route, icb_name}.
+    """
+    if is_bank:
+        return {"route": "BANK", "icb_name": "Ngân hàng"}
+    try:
+        imap = _load_industry_map(source)
+        if not imap.empty:
+            rows = imap[imap["symbol"].astype(str) == symbol.upper()]
+            names = " ".join(str(x) for x in rows.get("icb_name", pd.Series(dtype=str)).tolist())
+            low = names.lower()
+            if "bất động sản" in low or "real estate" in low:
+                return {"route": "REAL_ESTATE", "icb_name": "Bất động sản"}
+            if "ngân hàng" in low or "bank" in low:
+                return {"route": "BANK", "icb_name": "Ngân hàng"}
+            picked = next((str(x) for x in rows.get("icb_name", pd.Series(dtype=str)).tolist() if str(x)), "")
+            return {"route": "DEFAULT", "icb_name": picked or "—"}
+    except Exception:
+        pass
+    return {"route": "DEFAULT", "icb_name": "—"}
+
+
+def _implied_pb(fair_value, bvps_k):
+    """Quy fair value (nghìn đồng/CP) về implied P/B = fair_value / BVPS."""
+    fv, bv = _f(fair_value), _f(bvps_k)
+    if fv is None or not bv:
+        return None
+    return fv / bv
+
+
+def band_corridor_reliable(ipb, p10, p90, pb_now, corridor_low, corridor_high) -> tuple:
+    """Sanity check 2 chiều (L2). reliable trừ khi implied P/B nằm ngoài CẢ:
+      (a) band lịch sử [p10, p90], VÀ
+      (b) corridor quanh P/B hiện tại [corridor_low·pb_now, corridor_high·pb_now].
+    Nằm trong ít nhất một → reliable. Thiếu band/ipb → reliable (không đủ cơ sở loại).
+
+    Trả (reliable: bool, reason: str). reason nêu cả hai mốc vi phạm khi loại.
+    """
+    ipb = _f(ipb)
+    if ipb is None or p10 is None or p90 is None:
+        return True, ""
+    clow = (corridor_low * pb_now) if pb_now else None
+    chigh = (corridor_high * pb_now) if pb_now else None
+    out_band = ipb < p10 or ipb > p90
+    out_corr = clow is not None and (ipb < clow or ipb > chigh)
+    if not (out_band and out_corr):
+        return True, ""
+    parts = []
+    if ipb > p90:
+        parts.append(f"> P90 lịch sử {_xf(p90)}")
+    elif ipb < p10:
+        parts.append(f"< P10 lịch sử {_xf(p10)}")
+    if ipb > chigh:
+        parts.append(f"> {corridor_high:g}× P/B hiện tại {_xf(pb_now)} ({_xf(chigh)})")
+    elif ipb < clow:
+        parts.append(f"< {corridor_low:g}× P/B hiện tại {_xf(pb_now)} ({_xf(clow)})")
+    return False, f"implied P/B {_xf(ipb)} " + " và ".join(parts)
+
+
+_METHOD_LABELS = {
+    "justified_pb": "Justified P/B", "ddm": "DDM (Gordon)",
+    "sector": "Sector multiples", "pb_band": "P/B band (mid, P50)",
+}
+# Anchor cho rescue = các phương pháp mô hình độc lập (không tính band mid, vốn là
+# cược mean-reversion thống kê chứ không phải định giá độc lập).
+_ANCHOR_METHODS = ("justified_pb", "ddm", "sector")
+
+
+def band_mid_demoted(pct_now) -> bool:
+    """True nếu P/B hiện tại là outlier (percentile ≤10 hoặc ≥90) → hạ vai trò
+    band mid khỏi composite (chỉ tham khảo, không làm anchor mean-reversion)."""
+    p = _f(pct_now)
+    return p is not None and (p <= 10 or p >= 90)
+
+
+def apply_cross_method_rescue(methods: dict, rescue_tolerance: float) -> list:
+    """Khôi phục reliable cho phương pháp mô hình bị loại vì 'sanity' khi fair value
+    đồng thuận (max/min ≤ rescue_tolerance) với:
+      Rule A — BẤT KỲ anchor còn sống (phương pháp mô hình reliable=True): đồng thuận
+               với neo còn sống là bằng chứng MẠNH (ưu tiên), hoặc
+      Rule B — nhóm ≥2 phương pháp cùng bị loại đồng thuận nhau (bằng chứng yếu hơn).
+    Band mid KHÔNG dùng làm anchor (cược mean-reversion, không phải neo độc lập).
+    Mutate methods tại chỗ; trả list tên phương pháp được rescue."""
+    def _fv(n):
+        return _f(methods.get(n, {}).get("fair_value"))
+
+    rescued = []
+    # Rule A: đồng thuận với anchor còn sống.
+    anchors = {n: _fv(n) for n in _ANCHOR_METHODS
+               if methods.get(n, {}).get("reliable") and _fv(n) and _fv(n) > 0}
+    for n in _ANCHOR_METHODS:
+        if methods.get(n, {}).get("drop_kind") != "sanity" or not _fv(n):
+            continue
+        fv = _fv(n)
+        for aname, afv in anchors.items():
+            if aname == n:
+                continue
+            if min(fv, afv) > 0 and max(fv, afv) / min(fv, afv) <= rescue_tolerance:
+                methods[n]["reliable"] = True
+                methods[n]["drop_kind"] = "rescued"
+                methods[n]["reason"] = f"đồng thuận với {_METHOD_LABELS[aname]} — khôi phục"
+                rescued.append(n)
+                break
+
+    # Rule B: nhóm ≥2 phương pháp còn bị loại đồng thuận nhau.
+    remaining = [n for n in _ANCHOR_METHODS
+                 if n not in rescued
+                 and methods.get(n, {}).get("drop_kind") == "sanity" and _fv(n)]
+    if len(remaining) >= 2:
+        fvs = [_fv(n) for n in remaining]
+        if min(fvs) > 0 and max(fvs) / min(fvs) <= rescue_tolerance:
+            for n in remaining:
+                methods[n]["reliable"] = True
+                methods[n]["drop_kind"] = "rescued"
+                methods[n]["reason"] = "đồng thuận chéo — regime shift so với band lịch sử"
+                rescued.append(n)
+    return rescued
+
+
+def composite_fair_value(methods: dict, route: str, weights_cfg: dict,
+                         pays_dividend: bool) -> dict:
+    """Tổng hợp fair value theo mô hình 2 tier cho MỌI route.
+
+    - Composite tier: các phương pháp nằm trong route's composite_weights.
+    - Reference tier: phương pháp reliable=True KHÔNG nằm trong composite_weights
+      (vd sector với BANK, justified P/B với DEFAULT) — bình thường chỉ tham khảo.
+
+    Quy tắc: lấy composite-tier reliable + có fair_value. Nếu < 2 → PROMOTE các
+    reference-tier reliable vào composite, chia đều "phần trọng số thiếu"
+    (1 − tổng trọng số composite-tier sống sót) cho chúng, rồi renormalize. Chỉ
+    khi sau promote vẫn < 2 → composite điểm = None + TP range [min,max] (mọi
+    phương pháp có fair_value, kể cả reliable=False) để phase sau vẫn có số.
+
+    Trả: {composite, weights_used, n_used, converged, tp_range_low,
+          tp_range_high, promoted}.
+    """
+    key = route
+    if route == "DEFAULT" and not pays_dividend:
+        key = "DEFAULT_NODIV"
+    base = dict(weights_cfg.get(key, weights_cfg.get("DEFAULT", {})))
+
+    # TP range fallback: mọi phương pháp không error (có fair_value dương).
+    all_fvs = [fv for m in methods.values()
+               if (fv := _f(m.get("fair_value"))) is not None and fv > 0]
+    tp_low = min(all_fvs) if all_fvs else None
+    tp_high = max(all_fvs) if all_fvs else None
+
+    def _fv_ok(name):
+        m = methods.get(name)
+        if not m or not m.get("reliable"):
+            return None
+        fv = _f(m.get("fair_value"))
+        return fv if (fv is not None and fv > 0) else None
+
+    # Composite tier.
+    usable = {}
+    for name, w in base.items():
+        fv = _fv_ok(name)
+        if fv is not None:
+            usable[name] = (w, fv)
+
+    # Promotion: composite tier < 2 → kéo reference-tier reliable vào, chia đều
+    # phần trọng số thiếu.
+    promoted = []
+    if len(usable) < 2:
+        ref = [name for name in methods
+               if name not in base and _fv_ok(name) is not None]
+        if ref:
+            sum_surv = sum(w for w, _ in usable.values())
+            missing = 1.0 - sum_surv
+            if missing <= 0:
+                missing = 1.0
+            per = missing / len(ref)
+            for name in ref:
+                usable[name] = (per, _fv_ok(name))
+                promoted.append(name)
+
+    if len(usable) <= 1:
+        return {"composite": None, "weights_used": {}, "n_used": len(usable),
+                "converged": False, "tp_range_low": tp_low, "tp_range_high": tp_high,
+                "promoted": []}
+
+    wsum = sum(w for w, _ in usable.values())
+    weights_used = {name: round(w / wsum, 4) for name, (w, _) in usable.items()}
+    composite = sum((w / wsum) * fv for w, fv in usable.values())
+    return {"composite": composite, "weights_used": weights_used,
+            "n_used": len(usable), "converged": True,
+            "tp_range_low": tp_low, "tp_range_high": tp_high, "promoted": promoted}
+
+
 # ── Trích số từ frames đã fetch ─────────────────────────────────────────────
 
 def _avg_roe_3y(ra: pd.DataFrame):
-    """ROE_forward xấp xỉ = trung bình 3 năm gần nhất (ratio ROE (%) là fraction)."""
+    """ROE trung bình 3 năm gần nhất (ratio ROE (%) là fraction)."""
     if ra.empty or "ROE (%)" not in ra.columns:
         return None
     vals = [_f(x) for x in ra["ROE (%)"].tolist()]
     vals = [x for x in vals if x is not None][:3]
     return sum(vals) / len(vals) if vals else None
+
+
+def roe_forward(ra: pd.DataFrame, coe) -> dict:
+    """ROE_fwd bớt lạc quan hệ thống (L2).
+
+    - ROE_fwd mặc định = trung bình 3 năm (như cũ).
+    - Nếu ROE đang giảm (năm gần nhất < TB 3 năm) → fade thêm quanh xu hướng giảm:
+        ROE_fwd = ROE_gần_nhất − 0.5 × (TB_3y − ROE_gần_nhất)
+      (tức tiếp tục giảm nửa nhịp giảm gần nhất — thận trọng hơn cả năm gần nhất).
+    - Floor tại COE: không cho ROE_fwd < COE (tránh justified P/B < 1 vô nghĩa với
+      ngân hàng đầu ngành). Chạm floor → floored=True để flag.
+
+    Trả: {roe_fwd, roe_latest, roe_avg3y, declining, floored} hoặc {} nếu thiếu data.
+    """
+    avg3y = _avg_roe_3y(ra)
+    if avg3y is None:
+        return {}
+    vals = [_f(x) for x in ra["ROE (%)"].tolist()]
+    vals = [x for x in vals if x is not None]
+    roe_latest = vals[0] if vals else None
+    if roe_latest is None:
+        return {"roe_fwd": avg3y, "roe_latest": None, "roe_avg3y": avg3y,
+                "declining": False, "floored": False}
+
+    declining = roe_latest < avg3y
+    if declining:
+        roe_fwd = roe_latest - 0.5 * (avg3y - roe_latest)
+    else:
+        roe_fwd = avg3y
+
+    floored = False
+    if coe is not None and roe_fwd < coe:
+        roe_fwd = coe
+        floored = True
+
+    return {"roe_fwd": roe_fwd, "roe_latest": roe_latest, "roe_avg3y": avg3y,
+            "declining": declining, "floored": floored}
 
 
 def _bvps_k(ra: pd.DataFrame, is_bank: bool, price_k=None, pb=None):
@@ -458,7 +807,9 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
         if pb_now is None and not ra.empty:
             pb_now = _f(_get(ra.iloc[0], "P/B"))
 
-        roe_fwd = _avg_roe_3y(ra)
+        # ROE_fwd với fade khi ROE giảm (L2) — bớt lạc quan hệ thống, floor tại COE.
+        roe_info = roe_forward(ra, coe)
+        roe_fwd = roe_info.get("roe_fwd")
         bvps_k = _bvps_k(ra, is_bank, price_k=price_k, pb=pb_now)
         eps_ttm_k = _eps_ttm_k(ia)
         shares = _shares(ra)
@@ -473,10 +824,19 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
         if g is not None and coe is not None:
             g = max(0.0, min(g, coe - cfg["g_coe_buffer"]))
 
+        # L1 — P/B percentile band lịch sử 5 năm (neo thực nghiệm cho sanity check).
+        band = pb_history_band(symbol, source, rq, bvps_k, pb_now, cfg, as_of)
+
+        # L3 — route ngành để chọn phương pháp + trọng số.
+        route_info = _route_industry(symbol, source, is_bank)
+        route = route_info["route"]
+
         data: dict = {
             "as_of": as_of, "is_bank": is_bank, "price_k": price_k,
             "beta": beta_used, "coe": coe, "roe_fwd": roe_fwd, "g": g,
             "bvps_k": bvps_k, "eps_ttm_k": eps_ttm_k, "pb_now": pb_now,
+            "roe_info": roe_info, "pb_band": band, "route": route,
+            "icb_name": route_info.get("icb_name"),
         }
 
         # V1 — justified P/B
@@ -498,6 +858,15 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
         # V3 — sector multiples thực
         sect = sector_multiples(symbol, source, cfg, as_of)
         data["sector"] = sect
+        # Sector fair value: DEFAULT ưu tiên median P/E × EPS, fallback median P/B × BVPS;
+        # BANK/REAL_ESTATE dùng median P/B × BVPS (P/E ngành ngân hàng nhiễu).
+        sector_fv = None
+        if not sect.get("error"):
+            if route == "DEFAULT" and sect.get("median_pe") and eps_ttm_k and eps_ttm_k > 0:
+                sector_fv = sect["median_pe"] * eps_ttm_k
+            elif sect.get("median_pb") and bvps_k:
+                sector_fv = sect["median_pb"] * bvps_k
+        data["sector_fair_value"] = sector_fv
 
         # V4 — reverse-DCF (non-bank, cần FCF dương)
         rdcf = {}
@@ -509,6 +878,109 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
                 if fcf_ps_k and fcf_ps_k > 0:
                     rdcf = reverse_dcf(price_k, fcf_ps_k, coe, cfg["dcf_horizon"])
         data["reverse_dcf"] = rdcf
+
+        # ── L2 — sanity check corridor 2 chiều + cross-method rescue ───────────
+        # Mỗi phương pháp: {fair_value, implied_pb, reliable, reason, drop_kind}.
+        # drop_kind: None=reliable, "sanity"=ngoài band+corridor, "structural"=không
+        # phù hợp route/không đủ điều kiện, "error", "no_fv", "outlier_demote".
+        # Chỉ drop_kind="sanity" mới đủ tư cách được rescue.
+        band_ok = not band.get("error")
+        p10 = band.get("pb_p10") if band_ok else None
+        p90 = band.get("pb_p90") if band_ok else None
+        pct_now = band.get("pb_percentile_now") if band_ok else None
+        clow = (cfg["corridor_low"] * pb_now) if pb_now else None
+        chigh = (cfg["corridor_high"] * pb_now) if pb_now else None
+
+        def _sanity(fair_value, no_fv_reason: str = ""):
+            """Loại CHỈ KHI implied P/B ngoài CẢ band [P10,P90] LẪN corridor
+            [clow,chigh] (band_corridor_reliable). Nằm trong ít nhất một → reliable."""
+            fv = _f(fair_value)
+            if fv is None or fv <= 0:
+                return {"fair_value": None, "implied_pb": None, "reliable": False,
+                        "reason": no_fv_reason or "không có fair value", "drop_kind": "no_fv"}
+            ipb = _implied_pb(fv, bvps_k)
+            if not band_ok or ipb is None:
+                return {"fair_value": fv, "implied_pb": ipb, "reliable": True,
+                        "reason": "", "drop_kind": None}
+            reliable, reason = band_corridor_reliable(
+                ipb, p10, p90, pb_now, cfg["corridor_low"], cfg["corridor_high"])
+            return {"fair_value": fv, "implied_pb": ipb, "reliable": reliable,
+                    "reason": reason, "drop_kind": None if reliable else "sanity"}
+
+        methods: dict = {}
+
+        # justified P/B — REAL_ESTATE không phù hợp (cần RNAV, structural)
+        if route == "REAL_ESTATE":
+            methods["justified_pb"] = {
+                "fair_value": jpb.get("fair_value"), "implied_pb": jpb.get("justified_pb"),
+                "reliable": False, "drop_kind": "structural",
+                "reason": "không phù hợp cho BĐS — cần RNAV (quỹ đất/presales)"}
+        elif jpb.get("error"):
+            methods["justified_pb"] = {"fair_value": None, "implied_pb": None,
+                                        "reliable": False, "reason": jpb["error"],
+                                        "drop_kind": "error"}
+        else:
+            m = _sanity(jpb.get("fair_value"))
+            if m.get("implied_pb") is None:
+                m["implied_pb"] = jpb.get("justified_pb")
+            if roe_info.get("floored") and m["reliable"]:
+                m["reason"] = "ROE_fwd chạm sàn COE (mã đầu ngành ROE giảm mạnh)"
+            methods["justified_pb"] = m
+
+        # DDM — REAL_ESTATE không phù hợp; mã không phải cổ tức thực → structural
+        if route == "REAL_ESTATE":
+            methods["ddm"] = {"fair_value": ddm.get("fair_value"), "implied_pb": None,
+                              "reliable": False, "drop_kind": "structural",
+                              "reason": "không phù hợp cho BĐS — cần RNAV (quỹ đất/presales)"}
+        elif not (div.get("pays_dividend") and is_div_stock):
+            methods["ddm"] = {"fair_value": None, "implied_pb": None, "reliable": False,
+                              "drop_kind": "structural",
+                              "reason": f"payout {_pctf(payout) if payout is not None else '—'} "
+                                        f"< {_pctf(cfg['ddm_min_payout'],0)} — không phải mã cổ tức"}
+        elif ddm.get("error"):
+            methods["ddm"] = {"fair_value": None, "implied_pb": None,
+                              "reliable": False, "reason": ddm["error"], "drop_kind": "error"}
+        else:
+            m = _sanity(ddm.get("fair_value"))
+            if m.get("implied_pb") is None:
+                m["implied_pb"] = _implied_pb(ddm.get("fair_value"), bvps_k)
+            methods["ddm"] = m
+
+        # sector multiples
+        if sect.get("error"):
+            methods["sector"] = {"fair_value": None, "implied_pb": None,
+                                  "reliable": False, "reason": sect["error"],
+                                  "drop_kind": "error"}
+        else:
+            methods["sector"] = _sanity(sector_fv, "thiếu median P/E & P/B")
+
+        # pb_band mid — implied P/B = P50, luôn trong band theo định nghĩa.
+        # HẠ vai trò (loại khỏi composite) khi P/B hiện tại là outlier (pct ≤10 / ≥90).
+        if band_ok and band.get("fv_band_mid"):
+            if band_mid_demoted(pct_now):
+                methods["pb_band"] = {
+                    "fair_value": band["fv_band_mid"], "implied_pb": band.get("pb_p50"),
+                    "reliable": False, "drop_kind": "outlier_demote",
+                    "reason": f"P/B hiện tại ở P{_kf(pct_now,0)} — band lịch sử là cược "
+                              f"mean-reversion, không dùng làm anchor"}
+            else:
+                methods["pb_band"] = {"fair_value": band["fv_band_mid"],
+                                      "implied_pb": band.get("pb_p50"),
+                                      "reliable": True, "reason": "", "drop_kind": None}
+        else:
+            methods["pb_band"] = {"fair_value": None, "implied_pb": None,
+                                  "reliable": False, "drop_kind": "no_fv",
+                                  "reason": band.get("error", "không có band")}
+
+        # Cross-method rescue: ≥2 phương pháp (trừ band mid) bị loại vì "sanity"
+        # nhưng fair value đồng thuận trong ±rescue_tolerance → khôi phục cả nhóm.
+        apply_cross_method_rescue(methods, cfg["rescue_tolerance"])
+        data["methods"] = methods
+
+        # ── L3 — composite fair value ─────────────────────────────────────────
+        comp = composite_fair_value(methods, route, cfg["composite_weights"],
+                                     bool(div.get("pays_dividend")))
+        data["composite"] = comp
 
         # ── Markdown ────────────────────────────────────────────────────────
         md = ["", "---",
@@ -523,8 +995,14 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
         if jpb.get("error"):
             md.append(f"- Không tính được: {jpb['error']}")
         else:
-            md.append(f"- ROE_fwd (bq 3 năm) = **{_pctf(roe_fwd)}** · BVPS = **{_kf(bvps_k)} nghìn đ** · "
-                      f"P/B hiện tại = **{_xf(pb_now)}**")
+            if roe_info.get("declining"):
+                md.append(f"- ⚠ ROE đang giảm: năm gần nhất **{_pctf(roe_info.get('roe_latest'))}** "
+                          f"< bq 3 năm **{_pctf(roe_info.get('roe_avg3y'))}** → ROE_fwd fade xuống "
+                          f"**{_pctf(roe_fwd)}**" +
+                          (" (chạm sàn COE)" if roe_info.get("floored") else ""))
+            else:
+                md.append(f"- ROE_fwd (bq 3 năm) = **{_pctf(roe_fwd)}**")
+            md.append(f"- BVPS = **{_kf(bvps_k)} nghìn đ** · P/B hiện tại = **{_xf(pb_now)}**")
             md.append(f"- Justified P/B = ({_pctf(roe_fwd)} − {_pctf(g)}) / ({_pctf(coe)} − {_pctf(g)}) "
                       f"= **{_xf(jpb['justified_pb'])}** "
                       f"({'rẻ hơn' if pb_now and jpb['justified_pb'] > pb_now else 'đắt hơn'} P/B hiện tại)")
@@ -577,6 +1055,10 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
             md.append(f"- Median **P/E = {_xf(sect['median_pe'])}** (n={sect['n_pe']}) · "
                       f"**P/B = {_xf(sect['median_pb'])}** (n={sect['n_pb']}) · "
                       f"**EV/EBITDA = {_xf(sect['median_ev_ebitda'])}** (n={sect['n_ev']})")
+            if sector_fv:
+                _basis = ("median P/E × EPS" if (route == "DEFAULT" and sect.get("median_pe")
+                          and eps_ttm_k) else "median P/B × BVPS")
+                md.append(f"- Fair value ({_basis}) = **{_kf(sector_fv)} nghìn đ/CP**")
         md.append("")
 
         # V4
@@ -587,6 +1069,74 @@ def build_valuation_block(symbol: str, frames: dict, source: str = "VCI",
                       f"(terminal g = {_pctf(rdcf.get('terminal_g', 0.03))}).")
             md.append("- Dùng cho debate: Bull lập luận vì sao thực tế cao hơn, Bear vì sao thấp hơn.")
             md.append("")
+
+        # ── L1/L2/L3 — Band + bảng tổng hợp + composite ───────────────────────
+        md.append("### 📌 Tổng hợp định giá (composite) & sanity check bằng band lịch sử")
+
+        # Band lịch sử
+        if band_ok:
+            md.append(f"- P/B hiện tại **{_xf(band.get('pb_current'))}** = percentile "
+                      f"**P{_kf(band.get('pb_percentile_now'),0)}** trong "
+                      f"{band['n_quarters']} quý (5 năm) · "
+                      f"band P10–P90 = [{_xf(band['pb_p10'])}, {_xf(band['pb_p90'])}]")
+            md.append(f"- Fair value band [P25×BVPS, P75×BVPS] = "
+                      f"[**{_kf(band['fv_band_low'])}**, **{_kf(band['fv_band_high'])}**] nghìn đ · "
+                      f"midpoint (P50) = **{_kf(band['fv_band_mid'])}** nghìn đ")
+            if methods["pb_band"].get("drop_kind") == "outlier_demote":
+                md.append(f"- ⚠ P/B hiện tại ở P{_kf(pct_now,0)} (outlier) — band mid CHỈ tham khảo, "
+                          f"KHÔNG vào composite (cược mean-reversion không dùng làm anchor).")
+        else:
+            md.append(f"- Band P/B lịch sử: {band.get('error', 'không có')} (bỏ sanity check band)")
+        md.append("")
+
+        # Bảng phương pháp
+        md.append("| Phương pháp | Fair value (nghìn đ) | Implied P/B | Đáng tin | Ghi chú |")
+        md.append("|---|---|---|---|---|")
+        for name in ("justified_pb", "ddm", "sector", "pb_band"):
+            m = methods.get(name, {})
+            fv_s = _kf(m.get("fair_value")) if m.get("fair_value") else "—"
+            ipb_s = _xf(m.get("implied_pb")) if m.get("implied_pb") is not None else "—"
+            ok_s = "✓" if m.get("reliable") else "✗"
+            note = (m.get("reason") or "").replace("|", "/")
+            md.append(f"| {_METHOD_LABELS[name]} | {fv_s} | {ipb_s} | {ok_s} | {note} |")
+        md.append("")
+
+        # Composite TP
+        if comp.get("converged") and comp.get("composite"):
+            tp = comp["composite"]
+            up = (tp / price_k - 1) if price_k else None
+            ud = "upside" if (up is not None and up >= 0) else "downside"
+            md.append(f"- **TP (composite fair value): {_kf(tp)} nghìn đ**" +
+                      (f" → {ud} **{_pctf(up)}** so giá {_kf(price_k)} nghìn đ" if up is not None else ""))
+            wstr = " + ".join(f"{_pctf(w,0)} {_METHOD_LABELS[n]}"
+                              for n, w in comp["weights_used"].items())
+            md.append(f"- Route ngành: **{route}** ({route_info.get('icb_name','—')}) · "
+                      f"trọng số (đã renormalize): {wstr}")
+            if comp.get("promoted"):
+                pstr = ", ".join(_METHOD_LABELS[n] for n in comp["promoted"])
+                md.append(f"- *Promote reference-tier ({pstr}) vào composite vì composite "
+                          f"tier < 2 phương pháp sau khi loại/hạ.*")
+        else:
+            lo, hi = comp.get("tp_range_low"), comp.get("tp_range_high")
+            if lo is not None and hi is not None:
+                up_lo = (lo / price_k - 1) if price_k else None
+                up_hi = (hi / price_k - 1) if price_k else None
+                rng = (f" (so giá {_kf(price_k)}: {_pctf(up_lo)} … {_pctf(up_hi)})"
+                       if up_lo is not None else "")
+                md.append(f"- **TP range = [{_kf(lo)}, {_kf(hi)}] nghìn đ — ĐỘ TIN CẬY THẤP "
+                          f"(dùng range, KHÔNG dùng điểm)**{rng}")
+                md.append(f"- *Chỉ {comp.get('n_used',0)} phương pháp reliable (< 2) — các phương "
+                          f"pháp phân kỳ; range trải trên MỌI phương pháp có fair value.*")
+            else:
+                md.append("- **TP: không đủ dữ liệu định giá (không phương pháp nào ra fair value).**")
+            md.append(f"- Route ngành: **{route}** ({route_info.get('icb_name','—')})")
+        _promoted = comp.get("promoted") or []
+        if route == "REAL_ESTATE":
+            md.append("- *Composite BĐS là proxy (band + sector), CHƯA có RNAV "
+                      "(quỹ đất/presales) — cần bổ sung để định giá đầy đủ.*")
+        elif route == "BANK" and "sector" not in _promoted:
+            md.append("- *Sector multiples chỉ hiển thị tham khảo, không vào composite ngân hàng.*")
+        md.append("")
 
         md.append("---")
         return {"valuation_md": "\n".join(md), "data": data, "error": None}
