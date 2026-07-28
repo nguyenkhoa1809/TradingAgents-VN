@@ -33,6 +33,16 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
+      - name: Download wavy signals from R2
+        working-directory: marketwire
+        continue-on-error: true  # non-critical — thiếu wavy signals không được chặn pipeline
+        run: python scripts/wavy_sync.py download
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
       - name: Install Playwright browsers
         # crawl4ai (requirements.txt) cần Chromium thật cho các nguồn kind: scrape
         # (vd SBV — không có RSS, phải scrape trang JS-rendered). pip install chỉ

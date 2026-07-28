@@ -76,16 +76,6 @@ def render_all():
         ), encoding="utf-8"
     )
 
-    # Important: ★4+ trong 24h
-    important = [a for a in all_articles if (a["importance"] or 0) >= 4]
-    (DIST / "important.html").write_text(
-        env.get_template("feed.html").render(
-            title="MarketWire — Quan trọng ★4+",
-            articles=important,
-            nav_active="important",
-        ), encoding="utf-8"
-    )
-
     # Portfolio (universe)
     portfolio = [a for a in all_articles if a["tickers"]]
     (DIST / "portfolio.html").write_text(
@@ -187,15 +177,18 @@ def render_briefing(today: date = None):
     if today is None:
         today = date.today()
 
-    # 1. Wavy signals — tìm file của hôm nay hoặc hôm qua
-    screener_dir = ROOT.parent.parent / "screener-output"
+    # 1. Wavy signals — file gốc do wavy_scheduler.py sinh ra nằm ngoài git
+    # repo (screener-output/ là sibling của TradingAgents/), GitHub Actions
+    # runner không bao giờ thấy được thư mục đó. Sync qua R2 thay vì đọc local
+    # (xem scripts/wavy_sync.py — chạy `upload` trên máy local sau khi
+    # wavy_scheduler.py xong, `download` được thêm vào bước CI trước render).
+    wavy_path = ROOT.parent / "data" / "wavy_signals_latest.json"
     signals = []
-    for delta in (0, 1):
-        candidate = screener_dir / f"wavy_signals_{(today - timedelta(days=delta)).isoformat()}.json"
-        if candidate.exists():
-            data = json.loads(candidate.read_text(encoding="utf-8"))
+    if wavy_path.exists():
+        data = json.loads(wavy_path.read_text(encoding="utf-8"))
+        scan_date = data.get("scan_date", "")
+        if scan_date in (today.isoformat(), (today - timedelta(days=1)).isoformat()):
             signals = data.get("signals", [])
-            break
 
     # 2. Sell-side notes từ DB
     window_24h = "a.published >= datetime('now', '-24 hours')"
@@ -212,14 +205,40 @@ def render_briefing(today: date = None):
         order="COALESCE(a.importance,0) DESC, a.published DESC",
     )
 
-    (DIST / "briefing.html").write_text(
-        env.get_template("briefing.html").render(
-            title=f"Morning Briefing — {today.isoformat()}",
-            scan_date=today.isoformat(),
-            signals=signals,
-            sellside=sellside,
-            news=star4_news,
-            nav_active="briefing",
+    ctx = dict(
+        title=f"Morning Briefing — {today.isoformat()}",
+        scan_date=today.isoformat(),
+        signals=signals,
+        sellside=sellside,
+        news=star4_news,
+        nav_active="briefing",
+    )
+    tpl = env.get_template("briefing.html")
+
+    # Trang "Briefing" trong nav luôn là bản mới nhất, bị ghi đè mỗi lần render.
+    (DIST / "briefing.html").write_text(tpl.render(**ctx), encoding="utf-8")
+
+    # Archive theo ngày — không bao giờ bị ghi đè, để xem lại briefing ngày cũ.
+    archive_dir = DIST / "daily-briefing"
+    archive_dir.mkdir(exist_ok=True)
+    (archive_dir / f"{today.isoformat()}.html").write_text(
+        tpl.render(**{**ctx, "nav_prefix": "../", "nav_active": "briefing-archive"}),
+        encoding="utf-8",
+    )
+    render_briefing_archive_index(archive_dir)
+
+
+def render_briefing_archive_index(archive_dir: Path) -> None:
+    dates = sorted(
+        (p.stem for p in archive_dir.glob("*.html") if p.stem != "index"),
+        reverse=True,
+    )
+    (archive_dir / "index.html").write_text(
+        env.get_template("briefing_archive.html").render(
+            title="MarketWire — Lịch sử Briefing",
+            dates=dates,
+            nav_active="briefing-archive",
+            nav_prefix="../",
         ),
         encoding="utf-8",
     )

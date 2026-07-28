@@ -47,6 +47,28 @@ Body:
 """
 
 
+VIDEO_PROMPT = """Bạn là analyst hỗ trợ portfolio manager VN equity. Transcript sau là speech-to-text tự động từ 1 video YouTube tài chính (livestream/review thị trường) — sẽ có phần chào hỏi, chat lặp lại, quảng cáo Discord/khóa học ở đầu/cuối video. BỎ QUA hoàn toàn các đoạn đó, chỉ trích xuất nội dung tài chính thật sự. Trả về JSON đúng schema, KHÔNG kèm markdown.
+
+Schema:
+{{
+  "summary_vi": "2-3 câu tiếng Việt: số liệu macro được nhắc (nếu có) + quan điểm về thị trường/cổ phiếu cụ thể",
+  "summary_en": "2-3 sentences English, same content",
+  "thesis": "1 câu: khuyến nghị đầu tư hoặc quan điểm thị trường quan trọng nhất nếu có, hoặc empty string",
+  "importance": 1-5,
+  "topics": ["rates","fx","credit","em","vn-banks","commodities","tech","macro-us","macro-cn","equity-strategy", ...],
+  "tickers": ["VCB","FPT",...]
+}}
+
+Importance: 5=market-moving cho VN PM, 4=macro shift, 3=relevant context, 2=noise, 1=skip.
+Tickers: chỉ liệt kê mã có trong universe sau: {universe}
+
+Video: {title}
+Kênh: {source}
+Transcript (có thể lộn xộn do speech-to-text):
+{body}
+"""
+
+
 def summarize_one(title, source, body):
     prompt = PROMPT.format(
         universe=", ".join(sorted(UNIVERSE)),
@@ -56,9 +78,19 @@ def summarize_one(title, source, body):
     return LLM.complete_json(prompt, max_tokens=1400)
 
 
+def summarize_video(title, source, body):
+    prompt = VIDEO_PROMPT.format(
+        universe=", ".join(sorted(UNIVERSE)),
+        title=title, source=source,
+        body=body[:MAX_INPUT_CHARS],
+    )
+    return LLM.complete_json(prompt, max_tokens=1400)
+
+
 def process_article(row):
     try:
-        result = summarize_one(row["title"], row["source_name"], row["raw_text"] or "")
+        summarize_fn = summarize_video if row["kind"] == "youtube" else summarize_one
+        result = summarize_fn(row["title"], row["source_name"], row["raw_text"] or "")
         tickers_in_universe = [t for t in result.get("tickers", []) if t in UNIVERSE]
         hits = [t for t in tickers_in_universe if t in HOLDINGS]
         with conn() as c:
@@ -151,7 +183,7 @@ def rerank():
 def run():
     with conn() as c:
         rows = c.execute(
-            """SELECT a.id, a.title, a.raw_text, s.name AS source_name
+            """SELECT a.id, a.title, a.raw_text, s.name AS source_name, s.kind
                FROM articles a JOIN sources s ON a.source_id = s.id
                WHERE a.processed = 0
                ORDER BY a.published DESC

@@ -243,13 +243,13 @@ def fetch_youtube_source(source_row) -> int:
 
         try:
             ytt = YouTubeTranscriptApi()
-            segments = ytt.fetch(video_id, languages=["en", "en-US", "vi", "vi-VN"])
+            segments = ytt.fetch(video_id, languages=["vi", "vi-VN", "en", "en-US"])
         except Exception:
             # fallback: thử auto-generated bất kỳ ngôn ngữ
             try:
                 ytt = YouTubeTranscriptApi()
                 tlist = ytt.list(video_id)
-                gen = tlist.find_generated_transcript(["en", "vi"])
+                gen = tlist.find_generated_transcript(["vi", "en"])
                 segments = gen.fetch()
             except Exception:
                 print(f"    [-] {name}: no transcript for {video_id}")
