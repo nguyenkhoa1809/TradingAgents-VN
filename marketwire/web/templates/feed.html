@@ -5,7 +5,7 @@
 
 {% for a in articles %}
 <article class="article {% if a.hits_holdings %}hit{% endif %}">
-  <h2><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a></h2>
+  <h2><a href="{{ a.url }}" target="_blank" rel="noopener">{% if a.kind == 'youtube' %}📺 {% endif %}{{ a.title }}</a></h2>
   <div class="meta">
     {{ a.source_name }}
     {% if a.expert_name %} • <strong>{{ a.expert_name }}</strong>{% endif %}

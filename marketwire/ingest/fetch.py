@@ -244,15 +244,19 @@ def fetch_youtube_source(source_row) -> int:
         try:
             ytt = YouTubeTranscriptApi()
             segments = ytt.fetch(video_id, languages=["vi", "vi-VN", "en", "en-US"])
-        except Exception:
+        except Exception as e1:
             # fallback: thử auto-generated bất kỳ ngôn ngữ
             try:
                 ytt = YouTubeTranscriptApi()
                 tlist = ytt.list(video_id)
                 gen = tlist.find_generated_transcript(["vi", "en"])
                 segments = gen.fetch()
-            except Exception:
-                print(f"    [-] {name}: no transcript for {video_id}")
+            except Exception as e2:
+                # In rõ loại lỗi thật — youtube-transcript-api chặn IP datacenter
+                # (RequestBlocked/IpBlocked) trả lỗi khác hẳn "video thật sự không
+                # có transcript" (NoTranscriptFound/TranscriptsDisabled); catch-all
+                # cũ in "no transcript" chung chung che mất sự khác biệt này.
+                print(f"    [-] {name}: {video_id} — {type(e1).__name__}: {e1} | fallback {type(e2).__name__}: {e2}")
                 continue
 
         # youtube-transcript-api >=1.0 returns FetchedTranscriptSnippet dataclasses

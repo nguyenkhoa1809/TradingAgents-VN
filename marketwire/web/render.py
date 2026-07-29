@@ -40,7 +40,7 @@ def slugify(s):
 def load_articles(where: str = "1=1", limit: int = 500, order: str = "a.published DESC"):
     with conn() as c:
         rows = c.execute(f"""
-            SELECT a.*, s.name AS source_name, s.expert_name, s.region, s.lang
+            SELECT a.*, s.name AS source_name, s.expert_name, s.region, s.lang, s.kind
             FROM articles a JOIN sources s ON a.source_id = s.id
             WHERE a.processed = 1 AND {where}
             ORDER BY {order}
@@ -66,15 +66,21 @@ def render_all():
     window = "a.published >= datetime('now', '-24 hours')"
     imp_then_time = "COALESCE(a.importance,0) DESC, a.published DESC"
 
-    # Index: importance trước, time sau, 24h
+    # Index: importance trước, time sau, 24h. Video (youtube) không tính vào
+    # đây — tách riêng qua Expert Talk để khỏi lẫn với tin cào từ báo.
     all_articles = load_articles(where=window, limit=200, order=imp_then_time)
+    news_articles = [a for a in all_articles if a["kind"] != "youtube"]
     (DIST / "index.html").write_text(
         env.get_template("feed.html").render(
             title="MarketWire — Hôm nay",
-            articles=all_articles,
+            articles=news_articles,
             nav_active="index",
         ), encoding="utf-8"
     )
+
+    # Expert Talk: video/commentary từ chuyên gia (YouTube) — không giới hạn
+    # 24h như index, vì đây là điểm đến riêng để xem lại, không phải feed cuộn.
+    render_expert_talk()
 
     # Portfolio (universe)
     portfolio = [a for a in all_articles if a["tickers"]]
@@ -125,6 +131,19 @@ def render_all():
     render_briefing(today=date.today())
     render_blog()
     print(f"Rendered {len(all_articles)} articles to {DIST}")
+
+
+def render_expert_talk() -> None:
+    """Video/commentary từ chuyên gia (nguồn kind='youtube') — feed riêng,
+    không giới hạn 24h, để không lẫn với tin cào từ báo (index.html)."""
+    articles = load_articles(where="s.kind = 'youtube'", limit=200, order="a.published DESC")
+    (DIST / "expert-talk.html").write_text(
+        env.get_template("feed.html").render(
+            title="MarketWire — 🎙️ Expert Talk",
+            articles=articles,
+            nav_active="expert-talk",
+        ), encoding="utf-8"
+    )
 
 
 def _load_blog_posts() -> list:
