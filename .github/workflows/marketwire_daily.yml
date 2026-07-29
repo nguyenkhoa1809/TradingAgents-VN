@@ -6,8 +6,48 @@ on:
     - cron: '15 1 * * 1-6'  # 08:15 ICT (UTC+7) thứ 2 đến thứ 7
   workflow_dispatch:          # trigger thủ công
 
+# Pipeline download DB từ R2 -> sửa -> upload lại — 2 run chồng nhau sẽ đè mất
+# data của nhau (run nào upload sau thắng, không lỗi gì để thấy). Xếp hàng thay
+# vì hủy, để không mất lần chạy dữ liệu ngày hôm đó.
+concurrency:
+  group: marketwire-daily
+  cancel-in-progress: false
+
 jobs:
+  # Nguồn bên ngoài đang tự bắn workflow_dispatch ~8:00 ICT hàng ngày (token
+  # fine-grained "marketwire-dispatch-trigger", cron-job.org). Schedule 08:15
+  # ICT thường bị GitHub delay tới 11h-12h. Gate này để schedule chỉ chạy thật
+  # khi CHƯA có workflow_dispatch nào thành công trong ngày — tránh chạy
+  # trùng/tốn API 2 lần lúc 12h khi 8h đã xong, nhưng vẫn là backup nếu nguồn
+  # 8h đó hỏng.
+  gate:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      already_ran_today: ${{ steps.check.outputs.already_ran_today }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TODAY_ICT=$(TZ=Asia/Ho_Chi_Minh date +%F)
+          LAST_SUCCESS=$(gh run list --workflow=marketwire_daily.yml --event=workflow_dispatch \
+            --status=success --limit=1 --json createdAt --jq '.[0].createdAt // ""')
+          LAST_SUCCESS_ICT=""
+          if [ -n "$LAST_SUCCESS" ]; then
+            LAST_SUCCESS_ICT=$(TZ=Asia/Ho_Chi_Minh date -d "$LAST_SUCCESS" +%F)
+          fi
+          if [ "$LAST_SUCCESS_ICT" = "$TODAY_ICT" ]; then
+            echo "already_ran_today=true" >> "$GITHUB_OUTPUT"
+            echo "Đã có workflow_dispatch thành công hôm nay ($TODAY_ICT) — bỏ qua lần schedule này."
+          else
+            echo "already_ran_today=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run:
+    needs: [gate]
+    if: always() && !failure() && !cancelled() && needs.gate.outputs.already_ran_today != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
