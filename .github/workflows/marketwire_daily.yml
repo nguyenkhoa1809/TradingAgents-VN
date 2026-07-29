@@ -43,6 +43,19 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
 
+      - name: Download briefing archive from R2
+        # web/dist/ không persist giữa các lần chạy (checkout mới mỗi lần) —
+        # thiếu bước này thì daily-briefing/ chỉ còn đúng 1 ngày (hôm nay),
+        # các ngày cũ bị Cloudflare Pages deploy đè mất.
+        working-directory: marketwire
+        continue-on-error: true  # non-critical — thiếu archive cũ không được chặn pipeline
+        run: python scripts/archive_sync.py download
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
       - name: Install Playwright browsers
         # crawl4ai (requirements.txt) cần Chromium thật cho các nguồn kind: scrape
         # (vd SBV — không có RSS, phải scrape trang JS-rendered). pip install chỉ
@@ -63,6 +76,17 @@ jobs:
         if: always()  # upload kể cả khi pipeline partial fail — không mất data đã fetch
         working-directory: marketwire
         run: python scripts/db_sync.py upload
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+      - name: Upload briefing archive to R2
+        if: always()  # lưu lại archive kể cả khi pipeline partial fail
+        working-directory: marketwire
+        continue-on-error: true
+        run: python scripts/archive_sync.py upload
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
