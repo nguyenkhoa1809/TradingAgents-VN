@@ -72,7 +72,11 @@ jobs:
       - name: Deploy web to Cloudflare Pages
         if: success()  # chỉ deploy khi KHÔNG có step nào trước đó fail (vd migrate.py — bước critical duy nhất)
         working-directory: marketwire
-        run: npx wrangler pages deploy web/dist --project-name=marketwire
+        # --branch=main bắt buộc: actions/checkout@v4 để repo ở detached HEAD
+        # (không có branch local), nên wrangler không tự nhận diện được đây là
+        # nhánh production — thiếu flag này, deployment tạo ra preview URL
+        # riêng (đúng nội dung) nhưng KHÔNG cập nhật alias marketwire-129.pages.dev.
+        run: npx wrangler pages deploy web/dist --project-name=marketwire --branch=main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # token chỉ scope Pages:Edit nên wrangler không tự list được account —
