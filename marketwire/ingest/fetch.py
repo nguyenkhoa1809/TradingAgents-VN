@@ -5,7 +5,7 @@ LLM summarize/tag để pipeline sau xử lý (xem summarize.py).
 import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
@@ -17,6 +17,7 @@ from db import conn
 PARALLEL_WORKERS = 6
 TIMEOUT = 20
 USER_AGENT = "MarketWire/1.0 (personal aggregator)"
+ICT_TZ = timezone(timedelta(hours=7))  # giờ VN — dùng để xác định "hôm nay" cho video YouTube
 
 
 def url_hash(url: str) -> str:
@@ -235,6 +236,17 @@ def fetch_youtube_source(source_row) -> int:
         video_id = parse_qs(parsed_url.query).get("v", [None])[0]
         if not video_id:
             continue
+
+        # Bỏ qua video đăng HÔM NAY (giờ VN): mới upload thường chưa có
+        # transcript (auto-caption cần thời gian xử lý) — quét sẽ luôn fail.
+        # Để lần chạy ngày mai xử lý khi transcript đã sẵn; video vẫn nằm trong
+        # 15 entry mới nhất của feed nên không bị bỏ sót.
+        pub = entry.get("published_parsed") or entry.get("updated_parsed")
+        if pub:
+            pub_ict = datetime(*pub[:6], tzinfo=timezone.utc).astimezone(ICT_TZ).date()
+            if pub_ict >= datetime.now(ICT_TZ).date():
+                print(f"    [·] {name}: bỏ qua video hôm nay ({video_id})")
+                continue
 
         h = url_hash(link)
         with conn() as c:
