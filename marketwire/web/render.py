@@ -203,11 +203,19 @@ def render_briefing(today: date = None):
     # wavy_scheduler.py xong, `download` được thêm vào bước CI trước render).
     wavy_path = ROOT.parent / "data" / "wavy_signals_latest.json"
     signals = []
+    wavy_scan_date = None
     if wavy_path.exists():
         data = json.loads(wavy_path.read_text(encoding="utf-8"))
         scan_date = data.get("scan_date", "")
-        if scan_date in (today.isoformat(), (today - timedelta(days=1)).isoformat()):
+        # Briefing chạy buổi sáng, TRƯỚC lần scan wavy trong ngày (~15h ICT) —
+        # nên file của "hôm nay" chưa tồn tại lúc render, check hôm nay là vô
+        # nghĩa. Nhận scan của 1-3 ngày trước (đủ phủ nghỉ cuối tuần: sáng thứ
+        # Hai vẫn thấy tín hiệu thứ Sáu). wavy_scan_date hiện rõ ngày của scan
+        # đang xem để không nhầm là của hôm nay.
+        valid_dates = {(today - timedelta(days=d)).isoformat() for d in (1, 2, 3)}
+        if scan_date in valid_dates:
             signals = data.get("signals", [])
+            wavy_scan_date = scan_date
 
     # 2. Sell-side notes từ DB
     window_24h = "a.published >= datetime('now', '-24 hours')"
@@ -228,6 +236,7 @@ def render_briefing(today: date = None):
         title=f"Morning Briefing — {today.isoformat()}",
         scan_date=today.isoformat(),
         signals=signals,
+        wavy_scan_date=wavy_scan_date,
         sellside=sellside,
         news=star4_news,
         nav_active="briefing",

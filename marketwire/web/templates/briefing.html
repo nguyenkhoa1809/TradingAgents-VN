@@ -7,7 +7,7 @@
 ════════════════════════════════════════════════ -->
 <section style="margin-bottom:32px">
   <h3 style="color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:8px">
-    📡 Tín hiệu Wavy Tunnel ({{ signals|length }} mã)
+    📡 Tín hiệu Wavy Tunnel{% if wavy_scan_date %} — scan {{ wavy_scan_date }}{% endif %} ({{ signals|length }} mã)
   </h3>
   {% if signals %}
   <div style="overflow-x:auto">
@@ -46,8 +46,10 @@
     </tbody>
   </table>
   </div>
+  {% elif wavy_scan_date %}
+  <p style="color:var(--muted)">Scan {{ wavy_scan_date }} không có mã nào đạt ngưỡng.</p>
   {% else %}
-  <p style="color:var(--muted)">Không có tín hiệu hôm nay — file wavy_signals_{{ scan_date }}.json chưa được tạo.</p>
+  <p style="color:var(--muted)">Không có dữ liệu scan Wavy trong 3 ngày gần nhất.</p>
   {% endif %}
 </section>
 
