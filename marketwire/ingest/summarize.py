@@ -23,6 +23,10 @@ LLM = get_provider(LLM_CFG["provider"], LLM_CFG.get("model"))
 
 PARALLEL_WORKERS = 4
 MAX_INPUT_CHARS = 12000
+# Video: tóm tắt đầy đủ hơn (có detail_vi) — đọc gần trọn transcript (lưu tối đa
+# 25000 ký tự ở fetch.py) và cho output rộng hơn để chứa bản chi tiết 4 mục.
+VIDEO_MAX_INPUT_CHARS = 25000
+VIDEO_MAX_TOKENS = 2500
 
 PROMPT = """Bạn là analyst hỗ trợ portfolio manager VN equity. Phân tích bài viết sau và trả về JSON đúng schema, KHÔNG kèm markdown.
 
@@ -51,8 +55,9 @@ VIDEO_PROMPT = """Bạn là analyst hỗ trợ portfolio manager VN equity. Tran
 
 Schema:
 {{
-  "summary_vi": "2-3 câu tiếng Việt: số liệu macro được nhắc (nếu có) + quan điểm về thị trường/cổ phiếu cụ thể",
+  "summary_vi": "2-3 câu tiếng Việt tóm gọn nhất (teaser): kết luận/điểm chính của video",
   "summary_en": "2-3 sentences English, same content",
+  "detail_vi": "Tóm tắt ĐẦY ĐỦ tiếng Việt, chia đúng 4 mục sau, mỗi mục 1 dòng bắt đầu bằng nhãn (bỏ mục nếu video không đề cập):\\nMacro: các số liệu/sự kiện vĩ mô được nhắc (Fed, lãi suất, jobs, dầu, vàng, tỷ giá...) kèm con số cụ thể\\nThị trường: quan điểm về diễn biến/xu hướng thị trường (index, dòng tiền, sentiment)\\nCổ phiếu: các mã/nhóm ngành cụ thể được bàn và nhận định\\nKhuyến nghị: lời khuyên hành động nếu có",
   "thesis": "1 câu: khuyến nghị đầu tư hoặc quan điểm thị trường quan trọng nhất nếu có, hoặc empty string",
   "importance": 1-5,
   "topics": ["rates","fx","credit","em","vn-banks","commodities","tech","macro-us","macro-cn","equity-strategy", ...],
@@ -82,9 +87,9 @@ def summarize_video(title, source, body):
     prompt = VIDEO_PROMPT.format(
         universe=", ".join(sorted(UNIVERSE)),
         title=title, source=source,
-        body=body[:MAX_INPUT_CHARS],
+        body=body[:VIDEO_MAX_INPUT_CHARS],
     )
-    return LLM.complete_json(prompt, max_tokens=1400)
+    return LLM.complete_json(prompt, max_tokens=VIDEO_MAX_TOKENS)
 
 
 def process_article(row):
@@ -98,7 +103,7 @@ def process_article(row):
                 """UPDATE articles SET
                      summary_vi = ?, summary_en = ?, thesis = ?,
                      importance = ?, topics = ?, tickers = ?,
-                     hits_holdings = ?,
+                     hits_holdings = ?, detail_vi = ?,
                      processed = 1
                    WHERE id = ?""",
                 (result["summary_vi"], result["summary_en"],
@@ -107,6 +112,7 @@ def process_article(row):
                  json.dumps(result.get("topics", [])),
                  json.dumps(tickers_in_universe),
                  json.dumps(hits) if hits else None,
+                 result.get("detail_vi") or None,  # chỉ video có; bài RSS để NULL
                  row["id"]),
             )
         return True
