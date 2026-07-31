@@ -16,7 +16,7 @@
 
   {% if a.summary_vi %}<div class="summary">{{ a.summary_vi }}</div>{% endif %}
   {% if a.thesis %}<div class="thesis">{{ a.thesis }}</div>{% endif %}
-  {% if a.detail_vi %}<details><summary style="cursor:pointer;font-size:13px;color:var(--accent);font-weight:600">▶ Chi tiết</summary><div class="summary" style="white-space:pre-line;margin-top:8px">{{ a.detail_vi }}</div></details>{% endif %}
+  {% if a.detail_vi %}<details><summary style="cursor:pointer;font-size:13px;color:var(--accent);font-weight:600">Chi tiết</summary><div class="summary" style="white-space:pre-line;margin-top:8px">{{ a.detail_vi }}</div></details>{% endif %}
   {% if a.summary_en and a.lang == 'en' %}<details><summary style="cursor:pointer;font-size:12px;color:var(--muted)">EN</summary><div class="summary en">{{ a.summary_en }}</div></details>{% endif %}
 
   <div class="tags">
