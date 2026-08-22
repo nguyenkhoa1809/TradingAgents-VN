@@ -9,6 +9,10 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 
+import html
+import re
+import unicodedata
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -18,18 +22,44 @@ PARALLEL_WORKERS = 6
 TIMEOUT = 20
 USER_AGENT = "MarketWire/1.0 (personal aggregator)"
 ICT_TZ = timezone(timedelta(hours=7))  # giờ VN — dùng để xác định "hôm nay" cho video YouTube
+# processed=3: tin trùng (cùng sự kiện, khác nguồn) — không tính là "chưa xử
+# lý" (0) để summarize.py bỏ qua, không tính là "đã tóm tắt" (1) để render.py/
+# notify.py không hiện — 5 báo cùng đăng 1 tin PR chỉ tóm tắt 1 bản.
+SKIPPED_DUPLICATE = 3
+_DEDUP_STOPWORDS = set(
+    "va cua cho tu voi tai trong khi nhung mot cac da se duoc la co the nay "
+    "do vao ra len xuong nam thang ngay tin bai theo den tren duoi hon nhat "
+    "sau truoc them noi cung cong ty".split()
+)
 
 
 def url_hash(url: str) -> str:
     return hashlib.sha1(url.strip().lower().encode()).hexdigest()
 
 
+# id/class chứa 1 trong các từ này gần như luôn là chrome của trang (menu,
+# sidebar, banner quảng cáo, khối bình luận) chứ không phải nội dung bài —
+# phát hiện được vì Tuổi Trẻ/Vietstock/Thanh Niên đặt menu trong <div> thường,
+# không dùng thẻ <nav>/<header> ngữ nghĩa nên soup(["nav","header",...]) cũ
+# bỏ sót, khiến ~30-36% ký tự đầu mỗi bài là menu điều hướng lặp lại y hệt
+# giữa các bài khác nhau hoàn toàn về nội dung.
+_CHROME_HINTS = ("menu", "nav", "sidebar", "banner", "cookie", "share-",
+                 "social", "comment", "quangcao", "advertis", "widget",
+                 "breadcrumb", "footer", "header")
+
+
 def strip_html(html: str) -> str:
     if not html:
         return ""
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
+    # <head> (title/meta) không phải nội dung — get_text() mặc định vẫn lấy
+    # nếu không decompose, và <title> trang thường lặp lại tiêu đề + tên báo.
+    for tag in soup(["script", "style", "nav", "footer", "header", "head", "noscript"]):
         tag.decompose()
+    for tag in soup.find_all(True):
+        ident = tag.get("id", "") + " " + " ".join(tag.get("class", []) or [])
+        if any(h in ident.lower() for h in _CHROME_HINTS):
+            tag.decompose()
     return soup.get_text(separator=" ", strip=True)
 
 
@@ -302,6 +332,114 @@ def fetch_youtube_source(source_row) -> int:
     return new_count
 
 
+def _strip_dia(s: str) -> str:
+    s = unicodedata.normalize("NFD", s)
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+
+
+def _title_tokens(title: str) -> set:
+    t = _strip_dia(html.unescape(title or "").lower())
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    return {w for w in t.split() if len(w) > 2 and w not in _DEDUP_STOPWORDS}
+
+
+def _entity_tokens(title: str) -> set:
+    """Token 'tên riêng' trong title GỐC (chưa lowercase) — viết hoa giữa câu,
+    toàn chữ hoa (ticker/viết tắt: SHB, ECB, PNJ...), hoặc chữ+số dính nhau
+    (PC1, VSIP2). Dùng để chặn false positive kiểu 2 công ty khác nhau nhưng
+    cùng khuôn mẫu tin ("X bị phạt 300 triệu", "Y có chủ tịch mới", "Z lãi
+    hơn N tỷ trong 6 tháng") — Jaccard theo từ thường sẽ nhận nhầm là trùng
+    vì phần khuôn mẫu chiếm đa số từ, dù thực thể chính khác hẳn.
+    """
+    words = re.findall(r"[A-Za-zÀ-ỹ0-9]+", html.unescape(title or ""))
+    out = set()
+    for i, w in enumerate(words):
+        has_alpha = any(ch.isalpha() for ch in w)
+        has_digit = any(ch.isdigit() for ch in w)
+        is_allcaps = w.isupper() and len(w) >= 2
+        is_midcap = i > 0 and w[0].isupper() and len(w) >= 3
+        if (has_digit and has_alpha) or is_allcaps or is_midcap:
+            out.add(_strip_dia(w.lower()))
+    return out
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _is_same_story(a: dict, b: dict, threshold: float) -> bool:
+    if _jaccard(a["tok"], b["tok"]) < threshold:
+        return False
+    # Bắt buộc trùng ít nhất 1 tên riêng nếu title có tên riêng — 2 title đều
+    # không tên riêng nào (thường là tin thị trường chung, không gắn 1 công
+    # ty cụ thể) thì vẫn cho qua chỉ dựa vào word-Jaccard.
+    ea, eb = a["ent"], b["ent"]
+    return bool(ea & eb) or (not ea and not eb)
+
+
+def dedup_cross_source(hours: int = 48, threshold: float = 0.55) -> int:
+    """Gộp tin trùng sự kiện đăng bởi nhiều báo khác nhau (PR, tin thời sự lớn
+    3-5 nguồn cùng đưa) — đo được ~3.5% volume trên dữ liệu thật (53/1530 bài
+    RSS/7 ngày), verify tay toàn bộ 42 cụm, không có gộp nhầm 2 sự kiện khác
+    nhau. threshold 0.55 + entity-gate cố ý bảo thủ: từng thử 0.45 không có
+    entity-gate và bắt nhầm "ECB giữ nguyên lãi suất" với "Fed giữ nguyên lãi
+    suất", "Eximbank có chủ tịch mới" với "PC1 có Chủ tịch mới" — 2 công ty
+    khác nhau nhưng cùng khuôn mẫu câu. Thà bỏ sót vài tin trùng còn hơn giấu
+    mất 1 tin thị trường thật sự khác biệt.
+
+    Chỉ hạ processed=0 -> SKIPPED_DUPLICATE, KHÔNG bao giờ đụng bài đã tóm tắt
+    (processed=1): nếu 1 nguồn đã lên feed rồi, các nguồn đến sau trùng tin bị
+    gộp vào nguồn đó; nếu tất cả còn mới, giữ lại bài dài nhất (raw_text đầy
+    đủ nhất) làm bản canonical cho summarize.py xử lý.
+    """
+    with conn() as c:
+        rows = c.execute(
+            """SELECT id, source_id, title, raw_text, processed
+               FROM articles
+               WHERE published >= datetime('now', ?) AND processed IN (0, 1)""",
+            (f"-{hours} hours",),
+        ).fetchall()
+
+    items = [dict(r) for r in rows]
+    for it in items:
+        it["tok"] = _title_tokens(it["title"])
+        it["ent"] = _entity_tokens(it["title"])
+
+    n_marked = 0
+    seen = set()
+    for i, a in enumerate(items):
+        if a["id"] in seen or not a["tok"]:
+            continue
+        group = [a]
+        for b in items[i + 1:]:
+            if b["id"] in seen or b["source_id"] == a["source_id"]:
+                continue
+            if _is_same_story(a, b, threshold):
+                group.append(b)
+        if len(group) < 2:
+            continue
+        for it in group:
+            seen.add(it["id"])
+        # ưu tiên bài đã tóm tắt (processed=1) làm canonical — khỏi tốn LLM
+        # thêm lần nào; nếu chưa bài nào tóm tắt, chọn bài đầy đủ nội dung nhất.
+        already = [it for it in group if it["processed"] == 1]
+        canonical = already[0] if already else max(group, key=lambda it: len(it["raw_text"] or ""))
+        dupes = [it for it in group if it["id"] != canonical["id"] and it["processed"] == 0]
+        if not dupes:
+            continue
+        with conn() as c:
+            for it in dupes:
+                c.execute("UPDATE articles SET processed = ? WHERE id = ?",
+                          (SKIPPED_DUPLICATE, it["id"]))
+        n_marked += len(dupes)
+
+    if n_marked:
+        print(f"  [·] Gộp {n_marked} bài trùng tin (khác nguồn, cùng sự kiện) — bỏ qua LLM.")
+    return n_marked
+
+
 def run():
     with conn() as c:
         sources = c.execute(
@@ -322,6 +460,7 @@ def run():
             total += f.result()
 
     print(f"\nTổng: {total} bài mới")
+    dedup_cross_source()
     return total
 
 
