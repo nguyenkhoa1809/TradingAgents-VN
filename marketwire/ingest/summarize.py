@@ -22,7 +22,18 @@ LLM_CFG = CFG["llm"]["default"]
 LLM = get_provider(LLM_CFG["provider"], LLM_CFG.get("model"))
 
 PARALLEL_WORKERS = 4
-MAX_INPUT_CHARS = 12000
+# Tin báo viết theo inverted pyramid — lede + vài đoạn đầu đã đủ cho 2-3 câu
+# tóm tắt + chấm importance. 12000 ký tự cũ chiếm ~85% token mỗi request mà
+# phần đuôi bài gần như không đổi kết quả (Tuổi Trẻ TB 11.774 ch, sát trần).
+MAX_INPUT_CHARS = 4000
+# Backlog gần đây chạm trần 200 mỗi ngày (tăng từ ~140-155 hồi tháng 7) — hạ
+# xuống để chặn chi phí DeepSeek leo theo backlog thay vì theo tin thật sự mới.
+ARTICLE_LIMIT = 120
+# Dưới ngưỡng này thì body rỗng/chỉ còn tiêu đề (Investing.com trả feed không
+# có content, fetch_full_text cũng fail) — gọi LLM chỉ đốt ~450 token overhead
+# để nhận về tóm tắt bịa từ mỗi cái title. Bỏ qua, đánh dấu processed=2.
+MIN_BODY_CHARS = 200
+SKIPPED_NO_BODY = 2  # sentinel: khác 0 (chờ xử lý) và 1 (đã tóm tắt, được render)
 # Video: tóm tắt đầy đủ hơn (có detail_vi) — đọc gần trọn transcript (lưu tối đa
 # 25000 ký tự ở fetch.py) và cho output rộng hơn để chứa bản chi tiết 4 mục.
 VIDEO_MAX_INPUT_CHARS = 25000
@@ -92,8 +103,24 @@ def summarize_video(title, source, body):
     return LLM.complete_json(prompt, max_tokens=VIDEO_MAX_TOKENS)
 
 
+def skip_no_body(row) -> bool:
+    """Loại bài không có nội dung TRƯỚC khi tốn 1 request LLM.
+
+    processed=2 để bài rơi khỏi cả hàng đợi summarize (processed=0) lẫn web
+    (render.py/notify.py lọc processed=1) — không cần sửa 2 file đó.
+    """
+    if len(row["raw_text"] or "") >= MIN_BODY_CHARS:
+        return False
+    with conn() as c:
+        c.execute("UPDATE articles SET processed = ? WHERE id = ?",
+                  (SKIPPED_NO_BODY, row["id"]))
+    return True
+
+
 def process_article(row):
     try:
+        if skip_no_body(row):
+            return None
         summarize_fn = summarize_video if row["kind"] == "youtube" else summarize_one
         result = summarize_fn(row["title"], row["source_name"], row["raw_text"] or "")
         tickers_in_universe = [t for t in result.get("tickers", []) if t in UNIVERSE]
@@ -188,22 +215,31 @@ def rerank():
 
 def run():
     with conn() as c:
+        pending = c.execute("SELECT COUNT(*) AS n FROM articles WHERE processed = 0").fetchone()["n"]
         rows = c.execute(
             """SELECT a.id, a.title, a.raw_text, s.name AS source_name, s.kind
                FROM articles a JOIN sources s ON a.source_id = s.id
                WHERE a.processed = 0
                ORDER BY a.published DESC
-               LIMIT 200"""
+               LIMIT ?""",
+            (ARTICLE_LIMIT,)
         ).fetchall()
 
+    if pending > ARTICLE_LIMIT:
+        print(f"  [!] Backlog {pending} bài > cap {ARTICLE_LIMIT} — {pending - ARTICLE_LIMIT} bài cũ hơn bị bỏ qua lần này.")
     print(f"Processing {len(rows)} articles với {LLM_CFG['provider']}/{LLM_CFG.get('model','default')}...")
-    ok = 0
+    ok = skipped = 0
     with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as ex:
         futures = [ex.submit(process_article, r) for r in rows]
         for f in as_completed(futures):
-            if f.result():
+            r = f.result()
+            if r is None:
+                skipped += 1
+            elif r:
                 ok += 1
-    print(f"Done: {ok}/{len(rows)}")
+    if skipped:
+        print(f"  [·] Bỏ qua {skipped} bài không có nội dung (<{MIN_BODY_CHARS} ch) — không gọi LLM.")
+    print(f"Done: {ok}/{len(rows) - skipped} (đã gọi LLM), skipped {skipped}")
     rerank()
 
 

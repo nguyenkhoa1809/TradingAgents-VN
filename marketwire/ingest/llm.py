@@ -81,13 +81,21 @@ class DeepSeekProvider(LLMProvider):
             kwargs["response_format"] = {"type": "json_object"}
 
         last_err = None
+        empty_streak = 0
         for attempt in range(3):
             resp = self.client.chat.completions.create(**kwargs)
             content = resp.choices[0].message.content or ""
             finish_reason = resp.choices[0].finish_reason
             if not content.strip():
+                # Empty 2 lần liên tiếp = bài này DeepSeek không trả nổi (không
+                # phải nhiễu tạm thời) — lần 3 cũng empty, bỏ sớm thay vì gửi
+                # lại nguyên prompt lần nữa. Chiếm phần lớn 57% request thừa.
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
                 time.sleep(1.5 * (attempt + 1))
                 continue
+            empty_streak = 0
             # max_tokens bị hit → JSON bị cắt → tăng budget và retry
             if finish_reason == "length":
                 kwargs["max_tokens"] = int(kwargs["max_tokens"] * 1.5)
