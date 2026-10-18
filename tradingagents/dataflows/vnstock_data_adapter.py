@@ -37,27 +37,11 @@ from pathlib import Path
 from typing import Optional
 
 
-def _ensure_home_venv_on_path() -> None:
-    """Bridge ~/.venv site-packages into sys.path.
-
-    Sponsored vnstock libs (vnstock_ta, vnstock_news, etc.) are installed in
-    ~/.venv per the recommended setup. TradingAgents uses its own project venv,
-    so we insert the home venv's site-packages to make them importable here.
-    """
-    home_venv = Path.home() / ".venv"
-    if not home_venv.exists():
-        return
-    # Windows: Lib/site-packages  |  Unix: lib/python*/site-packages
-    candidates = list(home_venv.glob("Lib/site-packages"))
-    candidates += list(home_venv.glob("lib/python*/site-packages"))
-    for sp in candidates:
-        sp_str = str(sp)
-        if sp_str not in sys.path:
-            sys.path.insert(1, sp_str)
-            break
-
-
-_ensure_home_venv_on_path()
+# Da bo _ensure_home_venv_on_path() (bac cau site-packages cua ~/.venv vao
+# sys.path). Tu vnstock the he 5, thu vien nam ngay trong moi truong dang chay
+# (.venv5x); ~/.venv van giu vnstock 4.x + vnstock_data 3.x cung ten goi
+# "vnstock", nen neu con chen ~/.venv vao truoc thi `import vnstock` se am
+# tham nap ban 4.x cu thay vi 5.x.
 
 # ---------------------------------------------------------------------------
 # Availability guard
@@ -68,26 +52,25 @@ class VnstockDataUnavailableError(Exception):
 
 
 def _require_vnstock_data():
-    """Return the vnstock_data module or raise VnstockDataUnavailableError."""
+    """Return the vnstock (generation 5) module or raise VnstockDataUnavailableError."""
     try:
-        return importlib.import_module("vnstock_data")
+        return importlib.import_module("vnstock")
     except ImportError as exc:
         raise VnstockDataUnavailableError(
-            "vnstock_data is not installed. "
-            "Install it in your ~/.venv to enable VN market data: "
-            "pip install vnstock_data"
+            "vnstock 5 is not installed. Install it in ~/.venv5x: "
+            "pip install -U --extra-index-url https://vnstocks.com/api/packages vnstock"
         ) from exc
 
 
 def _get_version() -> str:
-    """Return installed vnstock_data version string, or '0.0.0' if unknown."""
+    """Return installed vnstock version string, or '0.0.0' if unknown."""
     try:
-        vnd = importlib.import_module("vnstock_data")
+        vnd = importlib.import_module("vnstock")
         ver = getattr(vnd, "__version__", None)
         if ver:
             return ver
         from importlib.metadata import version
-        return version("vnstock_data")
+        return version("vnstock")
     except Exception:
         return "0.0.0"
 
@@ -269,7 +252,7 @@ def get_stock_data(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock_data import Market  # type: ignore
+    from vnstock import Market  # type: ignore
 
     mkt = Market()
     try:
@@ -413,7 +396,7 @@ def get_indicators(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock_data import Market  # type: ignore
+    from vnstock import Market  # type: ignore
 
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     # Warm-up đủ cho rolling dài nhất (SMA200 cần 200 phiên ~ 290 ngày lịch) +
@@ -442,7 +425,7 @@ def get_indicators(
 
     # Attempt vnstock_ta first (more accurate, handles edge cases)
     try:
-        from vnstock_ta import Indicator  # type: ignore
+        from vnstock_quant import Indicator  # type: ignore
         ta = Indicator(data=df)
         result = _compute_vn_ta_indicator(ta, ind_lower)
         if result is not None:
@@ -571,7 +554,7 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock_data import Fundamental  # type: ignore
+    from vnstock import Fundamental  # type: ignore
 
     sym = ticker.upper()
     sections: list[str] = [
@@ -597,12 +580,21 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
 
     # Financial health scorecard — auto-detects bank / securities / generic
     try:
-        from vnstock_data.ui.fundamental import Fundamental as _FunUI  # type: ignore
-        df_health = _FunUI(source="mas").equity(sym).financial_health(
-            scorecard="auto", lang="vi", limit=8  # fetch extra so filter has room
-        )
+        from vnstock import Fundamental as _FunUI  # type: ignore
+        # vnstock 5: KHONG truyen lai symbol vao financial_health() (5.1.0 bao
+        # "multiple values for argument 'com_type'", ke ca vi du trong doc), va
+        # khong con nguon "mas". Bang tra ve dang RONG - moi ky 1 cot
+        # ("2026-Q2"...) - nen loc theo COT ky (<= curr_date, 4 ky gan nhat),
+        # khong dung _filter_and_limit_periods (loc theo dong).
+        df_health = _FunUI().equity(sym).financial_health(scorecard="auto")
         if df_health is not None and not df_health.empty:
-            df_health = _filter_and_limit_periods(df_health, curr_date, n=4)
+            period_cols = [c for c in df_health.columns
+                           if _re.fullmatch(r"\d{4}(-Q[1-4])?", str(c))]
+            parsed = _parse_quarter_period(pd.Series(period_cols, dtype=str))
+            keep = [c for c, p in zip(period_cols, parsed)
+                    if pd.notna(p) and p <= pd.Timestamp(curr_date)][-4:]
+            id_cols = [c for c in df_health.columns if c not in period_cols]
+            df_health = df_health[id_cols + keep] if keep else df_health.iloc[0:0]
             if not df_health.empty:
                 sections.append(
                     "## Financial Health Scorecard (industry-adjusted, VAS) — 4 most recent periods\n"
@@ -651,7 +643,7 @@ def get_balance_sheet(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock_data import Fundamental  # type: ignore
+    from vnstock import Fundamental  # type: ignore
     import pandas as pd
 
     sym = ticker.upper()
@@ -693,7 +685,7 @@ def get_cashflow(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock_data import Fundamental  # type: ignore
+    from vnstock import Fundamental  # type: ignore
     import pandas as pd
 
     sym = ticker.upper()
@@ -735,7 +727,7 @@ def get_income_statement(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock_data import Fundamental  # type: ignore
+    from vnstock import Fundamental  # type: ignore
     import pandas as pd
 
     sym = ticker.upper()
@@ -954,7 +946,7 @@ def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> s
     # ── 1. Price-band sentiment from OHLCV ──────────────────────────────────
     price_block = "Price-band sentiment: data unavailable."
     try:
-        from vnstock_data import Market
+        from vnstock import Market
         df = Market().equity(sym).ohlcv(
             start=start_dt.strftime("%Y-%m-%d"), end=curr_date
         )
@@ -1018,7 +1010,7 @@ def _fetch_foreign_flow(sym: str, curr_date: str, look_back_days: int = 20) -> s
     start_dt = end_dt - timedelta(days=look_back_days + 16)
     for src in ("VCI", "KBS"):
         try:
-            from vnstock_data import Trading
+            from vnstock import Trading
             import pandas as pd
             fgn = Trading(symbol=sym, source=src).foreign_trade(
                 start=start_dt.strftime("%Y-%m-%d"), end=curr_date
@@ -1065,7 +1057,7 @@ def _fetch_vn_company_news(sym: str, n: int = 12) -> str:
     """Tin tức theo đúng mã từ vnstock_data Company.news (title + ngày + nguồn)."""
     for src in ("VCI", "KBS"):
         try:
-            from vnstock_data import Company
+            from vnstock import Company
             df = Company(symbol=sym, source=src).news()
             if df is None or df.empty:
                 continue

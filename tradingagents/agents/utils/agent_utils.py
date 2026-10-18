@@ -60,7 +60,7 @@ def _clean_identity_value(value: Any) -> Optional[str]:
 def _get_vn_listing() -> dict:
     """Return {symbol -> organ_name} for all VN equities. Cached once per process."""
     try:
-        from vnstock_data import Listing
+        from vnstock import Listing
         df = Listing(source="kbs").all_symbols(show=False)
         return dict(zip(df["symbol"], df["organ_name"]))
     except Exception:

@@ -207,7 +207,7 @@ def _load_industry_map(source: str) -> pd.DataFrame:
         except Exception:
             pass
     try:
-        from vnstock_data import Listing
+        from vnstock import Listing
         df = Listing(source=source).symbols_by_industries()
         if isinstance(df, pd.DataFrame) and not df.empty:
             try:
@@ -223,7 +223,7 @@ def _load_industry_map(source: str) -> pd.DataFrame:
 def _peer_latest_multiples(sym: str, source: str) -> dict:
     """P/E, P/B, EV/EBITDA của quý gần nhất cho 1 peer."""
     try:
-        from vnstock_data import Finance
+        from vnstock import Finance
         rq = _filter(_safe(Finance(symbol=sym, source=source).ratio), "quarter", 1)
         if rq.empty:
             return {}
@@ -326,7 +326,7 @@ def _pb_quarterly_series(symbol: str, source: str, rq: pd.DataFrame,
             pass
 
     try:
-        from vnstock_data import Finance
+        from vnstock import Finance
         raw = _safe(Finance(symbol=symbol, source=source).ratio)
         rqf = _filter(raw, "quarter", want)
         fresh = _extract(rqf)
@@ -694,7 +694,7 @@ def _fetch_cash_dividends(symbol: str, source: str) -> dict:
     """
     out = {}
     try:
-        from vnstock_data import Company
+        from vnstock import Company
         df = Company(symbol=symbol, source=source).events()
         if not isinstance(df, pd.DataFrame) or df.empty:
             return out

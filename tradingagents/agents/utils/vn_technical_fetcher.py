@@ -26,7 +26,7 @@ import pandas as pd
 
 def _safe_hist(symbol: str, start: str, end: str, source: str = "VCI", retries: int = 2):
     """Fetch daily history với retry (VCI hay lỗi ConnectionError thoáng qua)."""
-    from vnstock_data import Quote
+    from vnstock import Quote
     for i in range(retries + 1):
         try:
             df = Quote(symbol=symbol, source=source).history(start=start, end=end, interval="1D")
@@ -74,9 +74,9 @@ def _r2(v):
 def fetch_vn_technical_context(symbol: str, source: str = "VCI", n_weeks: int = 52) -> dict:
     empty = {"summary_md": "", "chart_json": "", "error": None}
     try:
-        import vnstock_data  # noqa: F401
+        import vnstock  # noqa: F401
     except ImportError:
-        empty["error"] = "vnstock_data not available"
+        empty["error"] = "vnstock not available"
         return empty
 
     try:

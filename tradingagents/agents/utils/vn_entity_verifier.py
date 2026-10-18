@@ -22,8 +22,7 @@ def fetch_company_profile_block(symbol: str, source: str = "VCI") -> str:
     Trả về empty string nếu fetch thất bại — verifier sẽ UNVERIFIED tất cả claims.
     """
     try:
-        import vnstock_data  # noqa: F401 — triggers auth
-        from vnstock_data import Company
+        from vnstock import Company
     except ImportError:
         return ""
 

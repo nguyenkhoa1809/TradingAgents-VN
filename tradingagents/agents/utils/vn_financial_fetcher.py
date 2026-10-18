@@ -191,7 +191,7 @@ def fetch_vn_financial_context(
     empty = {"summary_md": "", "chart_json": "", "is_bank": False, "error": None}
 
     try:
-        from vnstock_data import Finance, Quote
+        from vnstock import Finance, Quote
     except ImportError:
         empty["error"] = "vnstock_data not available in this environment"
         return empty
