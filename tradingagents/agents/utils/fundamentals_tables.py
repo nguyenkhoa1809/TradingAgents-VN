@@ -29,6 +29,16 @@ import math
 import pandas as pd
 
 from tradingagents.agents.utils.vn_financial_fetcher import _get
+from tradingagents.agents.utils.fiscal_calendar import prev_label_candidates
+
+
+def _prev_label(y: str, available: dict):
+    """Nhãn năm liền trước `y` có mặt trong dict `available` — thử 'FY{n-1}'
+    trước (niên độ đã dựng lại), rồi '{n-1}' thuần (mốc trước cutover)."""
+    for cand in prev_label_candidates(y):
+        if cand in available:
+            return cand
+    return None
 
 
 def _f(v):
@@ -43,7 +53,10 @@ def _f(v):
 
 
 def _year(row) -> str:
-    return str(row.get("report_period", ""))[:4]
+    """Nhãn năm — 'YYYY' (dương lịch) hoặc 'FYYYYY' (niên độ đã dựng lại bởi
+    fiscal_calendar cho ticker lệch lịch, vd CTD) — KHÔNG slice [:4], sẽ cắt
+    cụt nhãn 'FYxxxx' thành 'FY20'."""
+    return str(row.get("report_period", ""))
 
 
 def _bn(v):
@@ -70,7 +83,7 @@ def _rows_by_year(df: pd.DataFrame) -> dict:
         return out
     for _, r in df.iterrows():
         y = _year(r)
-        if y.isdigit():
+        if y.isdigit() or y.startswith("FY"):
             out[y] = r
     return out
 
@@ -148,8 +161,7 @@ def build_dupont_table(frames: dict, is_bank: bool) -> str:
         ]
         for y in years:
             ir, br = ia_y.get(y), ba_y.get(y)
-            py = str(int(y) - 1)
-            bprev = ba_y.get(py)
+            bprev = ba_y.get(_prev_label(y, ba_y))
             dt = _f(_get(ir, "Net sales", "Revenue")) if ir is not None else None
             lnst = _f(_get(ir, "Attributable to parent company", "Net profit")) if ir is not None else None
             ta_avg = _avg(_get(br, *_TA) if br is not None else None,

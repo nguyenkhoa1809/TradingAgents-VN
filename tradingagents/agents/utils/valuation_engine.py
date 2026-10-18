@@ -660,12 +660,14 @@ def _shares(ra: pd.DataFrame):
 
 
 def _fcf_by_year(ca: pd.DataFrame) -> dict:
-    """FCF = CFO − CapEx (A3), theo năm (VND)."""
+    """FCF = CFO − CapEx (A3), theo năm (VND). Nhãn năm lấy NGUYÊN report_period
+    ('YYYY' dương lịch hoặc 'FYYYYY' niên độ đã dựng lại — fiscal_calendar) —
+    KHÔNG slice [:4], sẽ cắt cụt 'FYxxxx' thành 'FY20'."""
     out = {}
     if ca.empty or "report_period" not in ca.columns:
         return out
     for _, r in ca.iterrows():
-        yr = str(r.get("report_period", ""))[:4]
+        yr = str(r.get("report_period", ""))
         cfo = _f(_get(r, "Net cash inflows/(outflows) from operating activities"))
         capex = _f(_get(r, "Purchases of fixed assets and other long term assets"))
         if cfo is not None and capex is not None:
@@ -678,7 +680,7 @@ def _lnst_by_year(ia: pd.DataFrame) -> dict:
     if ia.empty or "report_period" not in ia.columns:
         return out
     for _, r in ia.iterrows():
-        yr = str(r.get("report_period", ""))[:4]
+        yr = str(r.get("report_period", ""))
         v = _f(_get(r, "Attributable to parent company", "Net profit"))
         if v is not None:
             out[yr] = v

@@ -20,6 +20,10 @@ import math
 import pandas as pd
 from datetime import datetime
 
+from tradingagents.agents.utils.fiscal_calendar import (
+    reconstruct_flow_frame, reconstruct_point_in_time_frame, min_quarters_needed,
+)
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -221,7 +225,37 @@ def fetch_vn_financial_context(
         ia = _filter(inc_raw,   "annual",  n_years)     # annual income
         iq = _filter(inc_raw,   "quarter", n_quarters)  # quarterly income
         ba = _filter(bs_raw,    "annual",  n_years)     # annual balance sheet
+        bq = _filter(bs_raw,    "quarter", n_quarters)  # quarterly balance sheet
         ca = _filter(cf_raw,    "annual",  n_years)     # annual cash flow
+        cq = _filter(cf_raw,    "quarter", n_quarters)  # quarterly cash flow
+
+        # Niên độ lệch lịch (CTD...) — dựng lại "năm" annual thành FYxxxx
+        # thật ngay tại nguồn (xem fiscal_calendar.py), TRƯỚC khi build bảng/
+        # chart_data ở dưới và trước khi export frames cho fundamentals_tables
+        # /valuation_engine — 1 lần sửa, mọi nơi đọc frames đều tự động đúng.
+        # Không đổi gì nếu symbol không nằm trong FISCAL_YEAR_END_MONTH.
+        #
+        # Dùng slice quý RIÊNG (sâu hơn n_quarters hiển thị) cho việc dựng —
+        # nếu không, quý xa nhất cần cho niên độ cutover (vd 2023-Q3 cho CTD)
+        # sẽ bị n_quarters=10 mặc định cắt mất, forward-scan gãy ngay từ FY
+        # đầu tiên. rq/iq/bq/cq (hiển thị + export) giữ nguyên độ sâu gốc.
+        _as_of_q = (_today_dt.month - 1) // 3 + 1
+        _recon_n = min_quarters_needed(symbol, _today_dt.year, _as_of_q)
+        if _recon_n:
+            rq_recon = _filter(ratio_raw, "quarter", _recon_n)
+            iq_recon = _filter(inc_raw,   "quarter", _recon_n)
+            bq_recon = _filter(bs_raw,    "quarter", _recon_n)
+            cq_recon = _filter(cf_raw,    "quarter", _recon_n)
+        else:
+            rq_recon, iq_recon, bq_recon, cq_recon = rq, iq, bq, cq
+
+        ia = reconstruct_flow_frame(ia, iq_recon, symbol)
+        ca = reconstruct_flow_frame(
+            ca, cq_recon, symbol,
+            point_in_time_cols=("Cash and cash equivalents at the beginning of period",
+                                 "Cash and cash equivalents at the end of period"))
+        ba = reconstruct_point_in_time_frame(ba, bq_recon, symbol)
+        ra = reconstruct_point_in_time_frame(ra, rq_recon, symbol)
 
         is_bank = _is_bank(rq) if not rq.empty else False
         sec_class = sector_class(is_bank, ia, iq)
@@ -441,9 +475,13 @@ def fetch_vn_financial_context(
             "is_bank":     is_bank,
             "error":       None,
             # Raw sliced frames cho valuation_engine (tránh fetch lại ratio/income/cf).
+            # ra/ia/ba/ca đã dựng lại niên độ thật (fiscal_calendar) nếu symbol
+            # lệch lịch — bq/cq (quý) giữ nguyên dương lịch, chỉ dùng làm input
+            # dựng annual, không phải năm hiển thị.
             "frames": {
-                "ra": ra, "rq": rq, "ia": ia, "iq": iq, "ba": ba, "ca": ca,
-                "latest_price": latest_price, "is_bank": is_bank,
+                "ra": ra, "rq": rq, "ia": ia, "iq": iq, "ba": ba, "bq": bq,
+                "ca": ca, "cq": cq,
+                "latest_price": latest_price, "is_bank": is_bank, "symbol": symbol,
             },
         }
 
