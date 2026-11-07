@@ -350,9 +350,10 @@ def resolve_outcomes(con: sqlite3.Connection) -> int:
     resolved = 0
     if rows:
         try:
-            from vnstock_data import Quote
-        except ImportError:
-            logging.warning("vnstock_data not available — cannot resolve outcomes")
+            from tradingagents.dataflows.vn_gen6 import Quote, _kim
+            _kim()
+        except Exception as _e:  # noqa: BLE001
+            logging.warning("Dữ liệu VN không khả dụng — cannot resolve outcomes: %s", _e)
             Quote = None
 
         if Quote is not None:
@@ -414,9 +415,10 @@ def _resolve_stale_open_transitions(con: sqlite3.Connection) -> int:
         return 0
 
     try:
-        from vnstock_data import Quote
-    except ImportError:
-        logging.warning("vnstock_data not available — cannot resolve stale transitions")
+        from tradingagents.dataflows.vn_gen6 import Quote, _kim
+        _kim()
+    except Exception as _e:  # noqa: BLE001
+        logging.warning("Dữ liệu VN không khả dụng — cannot resolve stale transitions: %s", _e)
         return 0
 
     resolved = 0

@@ -37,11 +37,10 @@ from pathlib import Path
 from typing import Optional
 
 
-# Da bo _ensure_home_venv_on_path() (bac cau site-packages cua ~/.venv vao
-# sys.path). Tu vnstock the he 5, thu vien nam ngay trong moi truong dang chay
-# (.venv5x); ~/.venv van giu vnstock 4.x + vnstock_data 3.x cung ten goi
-# "vnstock", nen neu con chen ~/.venv vao truoc thi `import vnstock` se am
-# tham nap ban 4.x cu thay vi 5.x.
+# 07/11/2026: chuyen sang vnstock THE HE 6 — moi truy cap du lieu VN di qua
+# vn_gen6.py (-> kimdata trong ../quant-signals). Chay TA-VN bang
+# ~/.venv_6x/Scripts/python.exe (da cai TA-VN + vnstock 6). ~/.venv5x (the he 5)
+# va ~/.venv (vnstock_data 3.x) khong con dung cho TA-VN.
 
 # ---------------------------------------------------------------------------
 # Availability guard
@@ -52,13 +51,15 @@ class VnstockDataUnavailableError(Exception):
 
 
 def _require_vnstock_data():
-    """Return the vnstock (generation 5) module or raise VnstockDataUnavailableError."""
+    """Đảm bảo có vnstock thế hệ 6 + kimdata (qua vn_gen6); lỗi → VnstockDataUnavailableError."""
     try:
+        from .vn_gen6 import _kim
+        _kim()
         return importlib.import_module("vnstock")
-    except ImportError as exc:
+    except Exception as exc:
         raise VnstockDataUnavailableError(
-            "vnstock 5 is not installed. Install it in ~/.venv5x: "
-            "pip install -U --extra-index-url https://vnstocks.com/api/packages vnstock"
+            f"Dữ liệu VN không khả dụng ({exc}). Chạy TA-VN bằng ~/.venv_6x/Scripts/python.exe "
+            "và cần thư mục quant-signals (kimdata) cạnh TradingAgents."
         ) from exc
 
 
@@ -153,6 +154,8 @@ def _parse_quarter_period(series):
             end_month, end_day = _QUARTER_END[q]
             quarter_end = _pd.Timestamp(yr, end_month, end_day)
             return quarter_end + _pd.DateOffset(days=_PUB_LAG_DAYS[q])
+        if _re.fullmatch(r"\d{4}", str(s)):      # BCTC năm kiểm toán: hạn 90 ngày sau 31/12
+            return _pd.Timestamp(int(str(s)) + 1, 3, 31)
         return _pd.to_datetime(s, errors="coerce")
 
     return series.apply(_one)
@@ -252,7 +255,7 @@ def get_stock_data(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock import Market  # type: ignore
+    from .vn_gen6 import Market  # type: ignore
 
     mkt = Market()
     try:
@@ -269,7 +272,7 @@ def get_stock_data(
 
     header = (
         f"# VN stock data for {symbol.upper()} from {start_date} to {end_date}\n"
-        f"# Source: vnstock_data (Unified UI)\n"
+        f"# Source: vnstock thế hệ 6 (giá SSI; BCTC FHSC; tỷ số tính bằng vnstock_quant)\n"
         f"# Total records: {len(df)}\n"
         f"# IMPORTANT — PRICE UNIT: all price columns (open/high/low/close) are in\n"
         f"#   THOUSANDS of VND (nghìn đồng). Multiply by 1,000 for the actual VND price.\n"
@@ -396,7 +399,7 @@ def get_indicators(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock import Market  # type: ignore
+    from .vn_gen6 import Market  # type: ignore
 
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     # Warm-up đủ cho rolling dài nhất (SMA200 cần 200 phiên ~ 290 ngày lịch) +
@@ -554,12 +557,12 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock import Fundamental  # type: ignore
+    from .vn_gen6 import Fundamental  # type: ignore
 
     sym = ticker.upper()
     sections: list[str] = [
         f"# Fundamental data for {sym} as of {curr_date}\n"
-        f"# Source: vnstock_data (Unified UI)\n\n"
+        f"# Source: vnstock thế hệ 6 (giá SSI; BCTC FHSC; tỷ số tính bằng vnstock_quant)\n\n"
     ]
 
     fun = Fundamental()
@@ -580,7 +583,7 @@ def get_fundamentals(ticker: str, curr_date: str) -> str:
 
     # Financial health scorecard — auto-detects bank / securities / generic
     try:
-        from vnstock import Fundamental as _FunUI  # type: ignore
+        from .vn_gen6 import Fundamental as _FunUI  # type: ignore
         # vnstock 5: KHONG truyen lai symbol vao financial_health() (5.1.0 bao
         # "multiple values for argument 'com_type'", ke ca vi du trong doc), va
         # khong con nguon "mas". Bang tra ve dang RONG - moi ky 1 cot
@@ -643,7 +646,7 @@ def get_balance_sheet(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock import Fundamental  # type: ignore
+    from .vn_gen6 import Fundamental  # type: ignore
     import pandas as pd
 
     sym = ticker.upper()
@@ -662,7 +665,7 @@ def get_balance_sheet(
     header = (
         f"# Balance sheet for {sym} ({freq}) — 8 most recent periods\n"
         f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
-        f"# Source: vnstock_data\n\n"
+        f"# Source: BCTC FHSC (vnstock thế hệ 6)\n\n"
     )
     return _df_to_str(df, header)
 
@@ -685,7 +688,7 @@ def get_cashflow(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock import Fundamental  # type: ignore
+    from .vn_gen6 import Fundamental  # type: ignore
     import pandas as pd
 
     sym = ticker.upper()
@@ -704,7 +707,7 @@ def get_cashflow(
     header = (
         f"# Cash flow for {sym} ({freq}) — 8 most recent periods\n"
         f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
-        f"# Source: vnstock_data\n\n"
+        f"# Source: BCTC FHSC (vnstock thế hệ 6)\n\n"
     )
     return _df_to_str(df, header)
 
@@ -727,7 +730,7 @@ def get_income_statement(
     _require_vnstock_data()
     _assert_unified_ui()
 
-    from vnstock import Fundamental  # type: ignore
+    from .vn_gen6 import Fundamental  # type: ignore
     import pandas as pd
 
     sym = ticker.upper()
@@ -746,7 +749,7 @@ def get_income_statement(
     header = (
         f"# Income statement for {sym} ({freq}) — 8 most recent periods\n"
         f"# UNIT: tỷ đồng (VND billion). Multiply by 1,000 for VND million.\n"
-        f"# Source: vnstock_data\n\n"
+        f"# Source: BCTC FHSC (vnstock thế hệ 6)\n\n"
     )
     return _df_to_str(df, header)
 
@@ -946,7 +949,7 @@ def get_vn_sentiment(ticker: str, curr_date: str, look_back_days: int = 20) -> s
     # ── 1. Price-band sentiment from OHLCV ──────────────────────────────────
     price_block = "Price-band sentiment: data unavailable."
     try:
-        from vnstock import Market
+        from .vn_gen6 import Market
         df = Market().equity(sym).ohlcv(
             start=start_dt.strftime("%Y-%m-%d"), end=curr_date
         )
@@ -1008,9 +1011,9 @@ def _fetch_foreign_flow(sym: str, curr_date: str, look_back_days: int = 20) -> s
     """Tóm tắt dòng tiền khối ngoại (NN mua/bán ròng) — best-effort, fallback source."""
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=look_back_days + 16)
-    for src in ("VCI", "KBS"):
+    for src in ("SSI",):
         try:
-            from vnstock import Trading
+            from .vn_gen6 import Trading
             import pandas as pd
             fgn = Trading(symbol=sym, source=src).foreign_trade(
                 start=start_dt.strftime("%Y-%m-%d"), end=curr_date
@@ -1054,36 +1057,10 @@ def _fetch_foreign_flow(sym: str, curr_date: str, look_back_days: int = 20) -> s
 
 
 def _fetch_vn_company_news(sym: str, n: int = 12) -> str:
-    """Tin tức theo đúng mã từ vnstock_data Company.news (title + ngày + nguồn)."""
-    for src in ("VCI", "KBS"):
-        try:
-            from vnstock import Company
-            df = Company(symbol=sym, source=src).news()
-            if df is None or df.empty:
-                continue
-            tcol = next((c for c in ("news_title", "friendly_title", "title") if c in df.columns), None)
-            dcol = next((c for c in ("public_date", "publish_time", "date") if c in df.columns), None)
-            if not tcol:
-                continue
-            if dcol:
-                import pandas as pd
-                df = df.copy()
-                df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
-                df = df.sort_values(dcol, ascending=False)
-            lines = []
-            for _, r in df.head(n).iterrows():
-                title = str(r.get(tcol) or "").strip()
-                if not title:
-                    continue
-                d = str(r.get(dcol))[:10] if dcol else ""
-                src_name = str(r.get("news_source") or "").strip()
-                src_tag = f" ({src_name})" if src_name and src_name.lower() != "none" else ""
-                lines.append(f"- [{d}] {title}{src_tag}")
-            if lines:
-                return f"## Tin tức theo mã {sym} (vnstock_data, {len(lines)} tin mới nhất)\n" + "\n".join(lines)
-        except Exception:
-            continue
-    return f"## Tin tức theo mã {sym}\nKhông lấy được tin tức công ty."
+    """vnstock thế hệ 6 đã gỡ Company.news() (route removed) — tin theo mã lấy ở khối CafeF/RSS."""
+    return (f"## Tin tức theo mã {sym}\n"
+            "Nguồn tin theo mã của vnstock không còn ở thế hệ 6 — "
+            "xem khối CafeF / Google News bên dưới.")
 
 
 def _interpret_price_band(

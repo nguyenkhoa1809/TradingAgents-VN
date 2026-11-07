@@ -1,6 +1,6 @@
 """
 vn_financial_fetcher.py
-Pre-fetches structured financial data from vnstock_data for VN tickers.
+Pre-fetches structured financial data for VN tickers (vnstock thế hệ 6 qua vn_gen6/kimdata).
 
 Usage in agents:
     from tradingagents.agents.utils.vn_financial_fetcher import fetch_vn_financial_context
@@ -191,9 +191,10 @@ def fetch_vn_financial_context(
     empty = {"summary_md": "", "chart_json": "", "is_bank": False, "error": None}
 
     try:
-        from vnstock import Finance, Quote
-    except ImportError:
-        empty["error"] = "vnstock_data not available in this environment"
+        from tradingagents.dataflows.vn_gen6 import Finance, Quote, _kim
+        _kim()
+    except Exception as _e:  # noqa: BLE001
+        empty["error"] = f"dữ liệu VN không khả dụng: {_e}"
         return empty
 
     try:
@@ -270,7 +271,7 @@ def fetch_vn_financial_context(
 
         # --- Annual summary ---
         if not ra.empty:
-            md.append("### Tóm tắt tài chính năm (nguồn: vnstock_data)")
+            md.append("### Tóm tắt tài chính năm (nguồn: BCTC FHSC, tỷ số tính tại máy)")
             if is_bank:
                 md.append("| Năm | P/E | P/B | ROE | ROA | NIM | NPL | BVPS (VND) |")
                 md.append("|-----|-----|-----|-----|-----|-----|-----|------------|")

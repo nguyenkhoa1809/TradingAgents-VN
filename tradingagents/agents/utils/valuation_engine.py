@@ -207,7 +207,7 @@ def _load_industry_map(source: str) -> pd.DataFrame:
         except Exception:
             pass
     try:
-        from vnstock import Listing
+        from tradingagents.dataflows.vn_gen6 import Listing
         df = Listing(source=source).symbols_by_industries()
         if isinstance(df, pd.DataFrame) and not df.empty:
             try:
@@ -223,7 +223,7 @@ def _load_industry_map(source: str) -> pd.DataFrame:
 def _peer_latest_multiples(sym: str, source: str) -> dict:
     """P/E, P/B, EV/EBITDA của quý gần nhất cho 1 peer."""
     try:
-        from vnstock import Finance
+        from tradingagents.dataflows.vn_gen6 import Finance
         rq = _filter(_safe(Finance(symbol=sym, source=source).ratio), "quarter", 1)
         if rq.empty:
             return {}
@@ -267,22 +267,26 @@ def sector_multiples(symbol: str, source: str, cfg: dict, as_of: str) -> dict:
     capped = len(peers) > cfg["max_peers"]
     peers = sorted(peers)[: cfg["max_peers"]]
 
+    # vnstock thế hệ 6 không có ratio() → P/E, P/B peer lấy 1 lần từ kho fa_daily (kimdata,
+    # cập nhật hằng ngày, không gọi API). Peer ngoài universe của kho bị bỏ qua — n_pe/n_pb
+    # bên dưới phản ánh số peer THỰC có dữ liệu. EV/EBITDA peer chưa có trong kho → None.
+    from tradingagents.dataflows.vn_gen6 import peer_latest_multiples
+    pm = peer_latest_multiples(peers)
     pes, pbs, evs = [], [], []
     for p in peers:
-        m = _peer_latest_multiples(p, source)
+        m = pm.get(p, {})
         if m.get("pe") and m["pe"] > 0:
             pes.append(m["pe"])
         if m.get("pb") and m["pb"] > 0:
             pbs.append(m["pb"])
         if m.get("ev_ebitda") and m["ev_ebitda"] > 0:
             evs.append(m["ev_ebitda"])
-        time.sleep(cfg["peer_sleep"])
 
     def _med(xs):
         return round(float(pd.Series(xs).median()), 2) if xs else None
 
     out = {"icb_code": icb_code, "icb_name": icb_name, "level": level,
-           "n_peers": len(peers), "capped": capped, "as_of": as_of,
+           "n_peers": len(peers), "n_with_data": len(pm), "capped": capped, "as_of": as_of,
            "median_pe": _med(pes), "median_pb": _med(pbs),
            "median_ev_ebitda": _med(evs),
            "n_pe": len(pes), "n_pb": len(pbs), "n_ev": len(evs)}
@@ -326,7 +330,7 @@ def _pb_quarterly_series(symbol: str, source: str, rq: pd.DataFrame,
             pass
 
     try:
-        from vnstock import Finance
+        from tradingagents.dataflows.vn_gen6 import Finance
         raw = _safe(Finance(symbol=symbol, source=source).ratio)
         rqf = _filter(raw, "quarter", want)
         fresh = _extract(rqf)
@@ -694,7 +698,7 @@ def _fetch_cash_dividends(symbol: str, source: str) -> dict:
     """
     out = {}
     try:
-        from vnstock import Company
+        from tradingagents.dataflows.vn_gen6 import Company
         df = Company(symbol=symbol, source=source).events()
         if not isinstance(df, pd.DataFrame) or df.empty:
             return out

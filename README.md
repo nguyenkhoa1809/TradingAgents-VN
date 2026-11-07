@@ -316,7 +316,7 @@ Please reference our work if you find *TradingAgents* provides you with some hel
 
 | Feature | Upstream | This fork |
 |---|---|---|
-| Vietnam market data | ✗ | ✓ `vnstock_data` · HOSE/HNX · tiếng Việt output |
+| Vietnam market data | ✗ | ✓ vnstock thế hệ 6 (SSI/FHSC qua `quant-signals/kimdata`) · HOSE/HNX · tiếng Việt output |
 | Report output | CLI text only | ✓ Full HTML report — charts, signal banner, 6-agent rating table |
 | Structured ratings | Partial (PM/RM/Trader not persisted) | ✓ All 6 agents save rating + reason to state/JSON |
 | Citation validator | ✗ | ✓ Auto-flags hallucinated analyst citations |
@@ -328,9 +328,11 @@ Please reference our work if you find *TradingAgents* provides you with some hel
 ### VN-specific additions
 
 **Data layer**
-- `tradingagents/dataflows/vnstock_data_adapter.py` — bridges `vnstock_data` (sponsored tier) for HOSE/HNX price, financials, sentiment, and news
+- `tradingagents/dataflows/vn_gen6.py` — **the only VN data entry point** (since 2026-11-07): vnstock gen 6 via `../quant-signals/kimdata` (prices SSI→FHSC, statements FHSC with DuckDB cache, ratios computed by `vnstock_quant.fa`, historical market cap from the gen-5 archive). Rebuilds the legacy wide frames the fetchers expect.
+- `tradingagents/dataflows/vnstock_data_adapter.py` — LLM tool functions for HOSE/HNX price, financials, sentiment, news (data via `vn_gen6`)
+- **Run with `~/.venv_6x/Scripts/python.exe`** (TA-VN installed there with `pip install --no-build-isolation -e .`); `~/.venv5x` / `vnstock_data` are retired
 - `tradingagents/agents/utils/vn_financial_fetcher.py` — sector-aware financial context builder; pre-computes bank vs non-bank ratios, TTM metrics, FCF; single source of truth for all agents (no re-fetching)
-- `tradingagents/dataflows/market_router.py` — routes VN tickers to `vnstock_data` stack, global tickers to `yfinance`/`alpha_vantage`
+- `tradingagents/dataflows/market_router.py` — routes VN tickers to the vnstock (gen 6) stack, global tickers to `yfinance`/`alpha_vantage`
 
 **Report engine**
 - `render_report.py` — standalone HTML report generator: candlestick charts, MACD/RSI overlays, scroll-spy navigation, conviction badge, 6-agent rating summary table with reasons
