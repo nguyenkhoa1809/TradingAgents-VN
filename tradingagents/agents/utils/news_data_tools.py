@@ -125,14 +125,24 @@ def get_marketwire_news(
             """,
             (lower, upper, f'%"{ticker_upper}"%'),
         ).fetchall()
+        latest = con.execute("SELECT MAX(published) FROM articles").fetchone()[0]
         con.close()
     except Exception as e:
         return f"MarketWire query error: {e}"
 
-    if not rows:
-        return f"No MarketWire articles found for {ticker_upper} in [{lower[:10]}, {upper[:10]}]."
+    # Fail loud: DB local chỉ là bản sao từ R2 (pipeline chạy trên GitHub Actions). Bản sao cũ
+    # → "không có tin" là SAI nghĩa (thực ra là thiếu dữ liệu) — 08/11/2026 đã gặp: DB local
+    # dừng ở 31/07 trong khi R2 có tới 21/10, và workflow bị GitHub tắt do repo không hoạt động.
+    stale_note = ""
+    if latest and latest[:10] < (end_dt - timedelta(days=3)).date().isoformat():
+        stale_note = (f"⚠ MarketWire DATA STALE: newest article in local DB is {latest[:10]} "
+                      f"(analysis date {upper[:10]}). Treat missing news as UNKNOWN, not 'no news'. "
+                      f"Refresh: python marketwire/scripts/db_sync.py download\n")
 
-    lines = [f"=== MarketWire: {ticker_upper} (last {days} days, {len(rows)} articles) ===\n"]
+    if not rows:
+        return stale_note + f"No MarketWire articles found for {ticker_upper} in [{lower[:10]}, {upper[:10]}]."
+
+    lines = [stale_note + f"=== MarketWire: {ticker_upper} (last {days} days, {len(rows)} articles) ===\n"]
     for r in rows:
         tickers = json.loads(r["tickers"] or "[]")
         if ticker_upper not in tickers and r["source_name"] != "Sell-side Notes":
