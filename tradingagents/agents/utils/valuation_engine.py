@@ -267,7 +267,7 @@ def sector_multiples(symbol: str, source: str, cfg: dict, as_of: str) -> dict:
     capped = len(peers) > cfg["max_peers"]
     peers = sorted(peers)[: cfg["max_peers"]]
 
-    # vnstock thế hệ 6 không có ratio() → P/E, P/B peer lấy 1 lần từ kho fa_daily (kimdata,
+    # vnstock thế hệ 6 không có ratio() → P/E, P/B peer lấy 1 lần từ kho fa_daily (NLNK_Marketdata,
     # cập nhật hằng ngày, không gọi API). Peer ngoài universe của kho bị bỏ qua — n_pe/n_pb
     # bên dưới phản ánh số peer THỰC có dữ liệu. EV/EBITDA peer chưa có trong kho → None.
     from tradingagents.dataflows.vn_gen6 import peer_latest_multiples

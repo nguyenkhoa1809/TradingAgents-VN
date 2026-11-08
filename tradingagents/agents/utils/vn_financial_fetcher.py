@@ -1,6 +1,6 @@
 """
 vn_financial_fetcher.py
-Pre-fetches structured financial data for VN tickers (vnstock thế hệ 6 qua vn_gen6/kimdata).
+Pre-fetches structured financial data for VN tickers (vnstock thế hệ 6 qua vn_gen6/NLNK_Marketdata).
 
 Usage in agents:
     from tradingagents.agents.utils.vn_financial_fetcher import fetch_vn_financial_context

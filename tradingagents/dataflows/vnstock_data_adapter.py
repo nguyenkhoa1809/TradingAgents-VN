@@ -38,7 +38,7 @@ from typing import Optional
 
 
 # 07/11/2026: chuyen sang vnstock THE HE 6 — moi truy cap du lieu VN di qua
-# vn_gen6.py (-> kimdata trong ../quant-signals). Chay TA-VN bang
+# vn_gen6.py (-> NLNK_Marketdata trong ../quant-signals). Chay TA-VN bang
 # ~/.venv_6x/Scripts/python.exe (da cai TA-VN + vnstock 6). ~/.venv5x (the he 5)
 # va ~/.venv (vnstock_data 3.x) khong con dung cho TA-VN.
 
@@ -51,7 +51,7 @@ class VnstockDataUnavailableError(Exception):
 
 
 def _require_vnstock_data():
-    """Đảm bảo có vnstock thế hệ 6 + kimdata (qua vn_gen6); lỗi → VnstockDataUnavailableError."""
+    """Đảm bảo có vnstock thế hệ 6 + NLNK_Marketdata (qua vn_gen6); lỗi → VnstockDataUnavailableError."""
     try:
         from .vn_gen6 import _kim
         _kim()
@@ -59,7 +59,7 @@ def _require_vnstock_data():
     except Exception as exc:
         raise VnstockDataUnavailableError(
             f"Dữ liệu VN không khả dụng ({exc}). Chạy TA-VN bằng ~/.venv_6x/Scripts/python.exe "
-            "và cần thư mục quant-signals (kimdata) cạnh TradingAgents."
+            "và cần thư mục quant-signals (NLNK_Marketdata) cạnh TradingAgents."
         ) from exc
 
 

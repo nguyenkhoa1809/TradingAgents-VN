@@ -1,5 +1,5 @@
 """
-vn_gen6.py — lớp dữ liệu VN của TA-VN trên vnstock THẾ HỆ 6 (qua kimdata/quant-signals).
+vn_gen6.py — lớp dữ liệu VN của TA-VN trên vnstock THẾ HỆ 6 (qua NLNK_Marketdata/quant-signals).
 
 Vì sao có file này (07/11/2026):
   - vnstock thế hệ 6 bỏ các lớp cũ Quote/Finance/Company/Listing/Trading; không có nguồn VCI/KBS;
@@ -8,8 +8,8 @@ Vì sao có file này (07/11/2026):
     viết cho dạng RỘNG nên khối FA đã âm thầm rỗng (error=None) từ đó.
 
 File này dựng lại ĐÚNG định dạng mà code TA-VN đang đọc, từ một nguồn duy nhất:
-  BCTC   ← kimdata.fin.statements (kho DuckDB trước, FHSC sau)
-  giá    ← kimdata.sources.ohlcv (SSI → FHSC)
+  BCTC   ← NLNK_Marketdata.fin.statements (kho DuckDB trước, FHSC sau)
+  giá    ← NLNK_Marketdata.sources.ohlcv (SSI → FHSC)
   tỷ số  ← vnstock_quant.fa.ratios (P/E, P/B, ROE, NIM, EV/EBITDA, FCF...) tính tại máy
 Gồm 2 kiểu khung:
   "classic"  cột tiếng Anh như vnstock_data cũ ("Net sales", "P/E", "ROE (%)"...), cột
@@ -22,8 +22,8 @@ Các lớp Finance / Quote / Company / Listing / Trading bắt chước API cũ 
 Quy ước số liệu:
   - Giá: nghìn đồng (như cũ). Giá trị BCTC: đồng. Tỷ số %: dạng thập phân (0.21 = 21%) như cũ.
   - Vốn hoá lịch sử = giá thô × số CP thực tế (archive gen 5, tới 06/11/2026), sau đó giá SSI ×
-    số CP hiện tại (kimdata.fin.market_series). Ngày giá: quý theo quy ước 'vn' (khớp VCI cũ),
-    năm = giá cuối năm (kimdata.fin.ratio_overrides).
+    số CP hiện tại (NLNK_Marketdata.fin.market_series). Ngày giá: quý theo quy ước 'vn' (khớp VCI cũ),
+    năm = giá cuối năm (NLNK_Marketdata.fin.ratio_overrides).
   - "Outstanding Shares (mil)" chứa SỐ CP THÔ (giữ quirk của VCI mà valuation_engine đã xử lý).
 """
 
@@ -45,14 +45,14 @@ if str(_QS) not in sys.path:
 
 
 class VnDataError(RuntimeError):
-    """Lỗi dữ liệu VN (thiếu kimdata / vnstock 6 / nguồn lỗi)."""
+    """Lỗi dữ liệu VN (thiếu NLNK_Marketdata / vnstock 6 / nguồn lỗi)."""
 
 
 def _kim():
     try:
-        from kimdata import fin, sources  # noqa: WPS433
+        from NLNK_Marketdata import fin, sources  # noqa: WPS433
     except ImportError as exc:
-        raise VnDataError(f"Không import được kimdata ({_QS}) — đặt KIM_QUANT_SIGNALS_DIR") from exc
+        raise VnDataError(f"Không import được NLNK_Marketdata ({_QS}) — đặt KIM_QUANT_SIGNALS_DIR") from exc
     if sources.backend() != "gen6":
         raise VnDataError("Cần vnstock thế hệ 6 — chạy TA-VN bằng ~/.venv_6x/Scripts/python.exe")
     return fin, sources
