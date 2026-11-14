@@ -77,13 +77,14 @@ def _get_version() -> str:
 
 
 def _assert_unified_ui():
-    """Ensure vnstock_data >= 3.0.0 (Unified UI) is installed."""
+    """Đảm bảo vnstock thế hệ 6 (tên hàm giữ từ thời vnstock_data cho tương thích)."""
     ver = _get_version()
     # Simple string prefix check — avoids packaging dependency
     major = int(ver.split(".")[0]) if ver[0].isdigit() else 0
-    if major < 3:
+    if major < 6:
         raise VnstockDataUnavailableError(
-            f"vnstock_data {ver} is too old. Upgrade: pip install -U vnstock_data"
+            f"vnstock {ver} không phải thế hệ 6 — chạy TA-VN bằng ~/.venv_6x/Scripts/python.exe "
+            "(cài: vnstock==6.0.0 vnstock-oapi==0.1.1 vnstock-quant==1.0.0, xem quant-signals/README.md)"
         )
 
 
@@ -1032,6 +1033,15 @@ def _fetch_foreign_flow(sym: str, curr_date: str, look_back_days: int = 20) -> s
                 own = pd.to_numeric(fgn["fr_owned_percentage"], errors="coerce").dropna() * 100
                 if len(own) >= 2:
                     own_txt = f"\n- Sở hữu NN: {own.iloc[-1]:.2f}% ({own.iloc[-1] - own.iloc[0]:+.2f} điểm % trong kỳ)"
+                elif len(own) == 1:   # gen 6: chỉ có ảnh chụp hiện tại (FHSC), không có lịch sử
+                    own_txt = f"\n- Sở hữu NN hiện tại: {own.iloc[-1]:.2f}%"
+                    if "fr_room_percentage" in fgn.columns:
+                        lim = pd.to_numeric(fgn["fr_room_percentage"], errors="coerce").dropna()
+                        if len(lim):
+                            own_txt += f" / room tối đa {lim.iloc[-1] * 100:.0f}%"
+                    own_txt += " (không có lịch sử để so sánh trong kỳ)"
+            if fgn.attrs.get("warnings"):
+                own_txt += "\n- Lưu ý dữ liệu: " + "; ".join(fgn.attrs["warnings"])
 
             if total_net > 0 and last5 >= 0:
                 label = "TÍCH CỰC — khối ngoại MUA RÒNG, dòng tiền ngoại đang vào"

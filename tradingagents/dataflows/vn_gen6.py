@@ -521,15 +521,17 @@ class Listing:
 
 class Trading:
     """foreign_trade(start, end) — cột kiểu cũ: trading_date, fr_buy_value_total,
-    fr_sell_value_total, fr_net_value_total (đồng). Không có % sở hữu NN theo ngày."""
+    fr_sell_value_total, fr_net_value_total (đồng). % sở hữu NN (fr_owned_percentage) và room tối
+    đa (fr_room_percentage) chỉ có ở phiên MỚI NHẤT — ảnh chụp FHSC, gen 6 không có lịch sử."""
 
     def __init__(self, symbol: str, source: str | None = None, **_):
         self.symbol = symbol.upper()
 
     def foreign_trade(self, start: str, end: str | None = None, **_):
-        _kim()
+        fin, sources = _kim()
         from vnstock import Market
         last = None
+        out = None
         for src in ("ssi", "fhsc"):
             try:
                 d = Market(src).equity(self.symbol).foreign_flow(start=start, end=end or date.today().isoformat())
@@ -538,18 +540,35 @@ class Trading:
                 t = pd.to_datetime(d["time"])
                 if getattr(t.dt, "tz", None) is not None:
                     t = t.dt.tz_localize(None)
-                return pd.DataFrame({
+                out = pd.DataFrame({
                     "trading_date": t.dt.normalize(),
                     "fr_buy_value_total": pd.to_numeric(d["buy_val"], errors="coerce"),
                     "fr_sell_value_total": pd.to_numeric(d["sell_val"], errors="coerce"),
                     "fr_net_value_total": pd.to_numeric(d["net_val"], errors="coerce"),
                     "fr_net_volume_total": pd.to_numeric(d["net_vol"], errors="coerce"),
                 }).sort_values("trading_date").reset_index(drop=True)
+                break
             except Exception as e:  # noqa: BLE001
                 last = e
-        if last:
-            raise VnDataError(f"foreign_trade {self.symbol}: {last}")
-        return pd.DataFrame()
+        if out is None:
+            if last:
+                raise VnDataError(f"foreign_trade {self.symbol}: {last}")
+            return pd.DataFrame()
+        out["fr_owned_percentage"] = float("nan")
+        out["fr_room_percentage"] = float("nan")
+        try:   # ảnh chụp hiện tại → gắn vào phiên mới nhất (dòng cuối, vì đã sort cũ → mới)
+            r = sources.foreign_room(self.symbol)
+            shares, _, _ = fin.current_shares(self.symbol)
+            if not shares:
+                raise RuntimeError("không có số CP hiện tại")
+            out.loc[out.index[-1], "fr_owned_percentage"] = r["owned_volume"] / shares
+            if r["limit_pct"] is not None:
+                out.loc[out.index[-1], "fr_room_percentage"] = r["limit_pct"]
+        except Exception as e:  # noqa: BLE001
+            msg = f"% sở hữu NN {self.symbol}: {type(e).__name__}: {str(e)[:200]}"
+            print(f"⚠️  vn_gen6: {msg}", file=sys.stderr)
+            out.attrs.setdefault("warnings", []).append(msg)
+        return out
 
 
 # ── Giao diện kiểu thế hệ 5 (Market/Fundamental) cho vnstock_data_adapter ──────
