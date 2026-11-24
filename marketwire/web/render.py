@@ -197,7 +197,7 @@ def render_briefing(today: date = None):
         today = date.today()
 
     # 1. Wavy signals — file gốc do wavy_scheduler.py sinh ra nằm ngoài git
-    # repo (screener-output/ là sibling của TradingAgents/), GitHub Actions
+    # repo (_data/screener-output/ ở thư mục cha của TradingAgents/), GitHub Actions
     # runner không bao giờ thấy được thư mục đó. Sync qua R2 thay vì đọc local
     # (xem scripts/wavy_sync.py — chạy `upload` trên máy local sau khi
     # wavy_scheduler.py xong, `download` được thêm vào bước CI trước render).

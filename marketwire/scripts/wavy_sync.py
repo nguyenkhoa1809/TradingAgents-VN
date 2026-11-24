@@ -1,8 +1,8 @@
 """wavy_sync.py — Sync wavy_signals JSON qua Cloudflare R2 (S3-compatible).
 
-wavy_scheduler.py (wavy-system/Daily/, SIBLING của TradingAgents/ — không nằm
+wavy_scheduler.py (ta-signals/wavy/Daily/ của repo gốc, SIBLING của TradingAgents/ — không nằm
 trong git repo này) ghi wavy_signals_YYYY-MM-DD.json vào
-Intelligence_&_Quant_Screening/screener-output/. GitHub Actions runner chỉ
+Intelligence_&_Quant_Screening/_data/screener-output/. GitHub Actions runner chỉ
 checkout repo TradingAgents nên KHÔNG BAO GIỜ thấy được thư mục đó — phải đẩy
 qua R2 (cùng bucket với marketwire.db, xem db_sync.py) để render.py trên CI
 đọc lại được.
@@ -29,7 +29,7 @@ from botocore.exceptions import ClientError
 
 OBJECT_KEY = "wavy_signals_latest.json"
 # scripts/ -> marketwire/ -> TradingAgents/ -> Intelligence_&_Quant_Screening/
-SCREENER_OUTPUT_DIR = Path(__file__).parent.parent.parent.parent / "screener-output"
+SCREENER_OUTPUT_DIR = Path(__file__).parent.parent.parent.parent / "_data" / "screener-output"
 LOCAL_PATH = Path(__file__).parent.parent / "data" / "wavy_signals_latest.json"
 
 
